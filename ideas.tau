@@ -1,0 +1,33 @@
+struct Node {
+    fn(any*) update,
+    any *data,
+}
+
+fn update(Node node) {
+    node.update(node.data);
+}
+
+struct MyNode {
+    int x,
+    int y,
+}
+
+fn my_node_as_node() Node {
+    return Node {
+        update = xx MyNode.update,
+        data = new(MyNode{
+            x = 0,
+            y = 0
+        }),
+    }
+}
+
+fn timer_node(int time) Node {
+    return Node {
+        update = xx fn(int time_left) {
+            time_left -= Time.delta;
+            if time_left <= 0 then print("Timer finished");
+        }
+        data = time
+    }
+}
