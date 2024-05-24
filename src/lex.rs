@@ -35,19 +35,20 @@ impl TryFrom<&str> for Keyword {
 #[derive(Debug, Clone)]
 #[repr(u32)]
 pub enum TokenKind {
-    Ident(String) = 1,
-    Int(i64) = 2,
-    Float(f64) = 3,
-    BinOp(BinOp) = 4,
-    BinOpEq(BinOp) = 5,
-    OpenDelim(Delimiter) = 6,
-    CloseDelim(Delimiter) = 7,
-    Keyword(Keyword) = 8,
-    Semi = 9,
-    Assign = 10,
-    LogAnd = 11,
-    LogOr = 12,
-    Comma = 13,
+    Ident(String),
+    Int(i64),
+    String(String),
+    Float(f64),
+    BinOp(BinOp),
+    BinOpEq(BinOp),
+    OpenDelim(Delimiter),
+    CloseDelim(Delimiter),
+    Keyword(Keyword),
+    Semi,
+    Assign,
+    LogAnd,
+    LogOr,
+    Comma,
 }
 
 impl TokenKind {
@@ -89,6 +90,7 @@ impl TokenKind {
             TokenKind::LogAnd => 11,
             TokenKind::LogOr => 12,
             TokenKind::Comma => 13,
+            TokenKind::String(_) => 14,
         }
     }
 
@@ -418,47 +420,73 @@ fn lex_ident(lex: &Lex, pos: &mut Pos) -> Option<Token> {
 
 fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
     match pos.peek(&lex.file) {
-        Some(c) => match c {
-            n if n.is_whitespace() => {
-                pos.advance(&lex.file);
-                next_token(lex, pos)
-            }
-            n if n.is_numeric() => lex_number(lex, pos),
-            n if n.is_delim() => lex_delim(lex, pos),
-            ';' => {
-                pos.advance(&lex.file);
-                Some(Token::new(TokenKind::Semi, Span::single(*pos)))
-            }
-            ',' => {
-                pos.advance(&lex.file);
-                Some(Token::new(TokenKind::Comma, Span::single(*pos)))
-            }
-            '=' => {
-                pos.advance(&lex.file);
-                Some(Token::new(TokenKind::Assign, Span::single(*pos)))
-            }
-            n if n.is_ascii_punctuation() => {
-                if n == '/' {
-                    let op = lex_op(lex, pos);
-                    if let Some(tok) = skip_comments(lex, pos) {
-                        Some(tok)
-                    } else {
-                        op
+        Some(c) => {
+            match c {
+                n if n.is_whitespace() => {
+                    pos.advance(&lex.file);
+                    next_token(lex, pos)
+                }
+                n if n.is_numeric() => lex_number(lex, pos),
+                n if n.is_delim() => lex_delim(lex, pos),
+                ';' => {
+                    pos.advance(&lex.file);
+                    Some(Token::new(TokenKind::Semi, Span::single(*pos)))
+                }
+                ',' => {
+                    pos.advance(&lex.file);
+                    Some(Token::new(TokenKind::Comma, Span::single(*pos)))
+                }
+                '=' => {
+                    pos.advance(&lex.file);
+                    Some(Token::new(TokenKind::Assign, Span::single(*pos)))
+                }
+                '"' => {
+                    let start_pos = *pos;
+                    pos.advance(&lex.file);
+                    let mut s = String::new();
+                    loop {
+                        match pos.advance(&lex.file) {
+                            Some('"') => break,
+                            Some('\\') => match pos.advance(&lex.file) {
+                                Some('n') => s.push('\n'),
+                                Some('t') => s.push('\t'),
+                                Some('r') => s.push('\r'),
+                                Some('0') => s.push('\0'),
+                                c => lex.error(
+                                    format!("Unexpected escape character but found found {:?} when lexing", c),
+                                    format!("fix this, dingus"),
+                                    &Span::single(*pos),
+                                ),
+                            },
+                            Some(c) => s.push(c),
+                            None => break,
+                        }
                     }
-                } else {
-                    lex_op(lex, pos)
+                    Some(Token::new(TokenKind::String(s), Span::new(start_pos, *pos)))
+                }
+                n if n.is_ascii_punctuation() => {
+                    if n == '/' {
+                        let op = lex_op(lex, pos);
+                        if let Some(tok) = skip_comments(lex, pos) {
+                            Some(tok)
+                        } else {
+                            op
+                        }
+                    } else {
+                        lex_op(lex, pos)
+                    }
+                }
+                n if n.is_ascii() => lex_ident(lex, pos),
+                _ => {
+                    lex.error(
+                        format!("Unexpected character found when lexing"),
+                        format!("remove this"),
+                        &Span::single(*pos),
+                    );
+                    None
                 }
             }
-            n if n.is_ascii() => lex_ident(lex, pos),
-            _ => {
-                lex.error(
-                    format!("Unexpected character found when lexing"),
-                    format!("remove this"),
-                    &Span::single(*pos),
-                );
-                None
-            }
-        },
+        }
         None => None,
     }
 }
