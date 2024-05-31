@@ -1,4 +1,4 @@
-use crate::{lex::Lex, pos::Span, LexVisiter};
+use crate::{lex::Lex, parse::LexVisiter, pos::Span};
 use core::fmt;
 use std::{process::exit, usize};
 
