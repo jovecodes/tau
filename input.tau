@@ -1,7 +1,17 @@
-fn print(string msg) {
+fn println(string str);
 
+fn takes_reference(int &x); // x can not be null
+fn takes_pointer(int @x) {
+    if *x == 2 {
+        println("Thats null!");
+    } else {
+        println("{*x}");
+    }
 }
 
 fn main() int { 
-    print("Hello, World");
+    int x = 3 * 7;
+    takes_reference(&x);
+    takes_pointer(@x);
+    return 0;
 }

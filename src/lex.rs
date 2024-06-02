@@ -8,11 +8,14 @@ use std::fs;
 pub enum Keyword {
     Return,
     Function,
+    If,
+    Else,
     Var,
     Int,
     Float,
     String,
     Bool,
+    Null,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -22,11 +25,14 @@ impl TryFrom<&str> for Keyword {
         match value {
             "return" => Ok(Keyword::Return),
             "fn" => Ok(Keyword::Function),
+            "else" => Ok(Keyword::Else),
+            "if" => Ok(Keyword::If),
             "var" => Ok(Keyword::Var),
             "int" => Ok(Keyword::Int),
             "float" => Ok(Keyword::Float),
             "string" => Ok(Keyword::String),
             "bool" => Ok(Keyword::Bool),
+            "null" => Ok(Keyword::Null),
             _ => Err(false),
         }
     }
@@ -94,17 +100,6 @@ impl TokenKind {
         }
     }
 
-    pub fn is_assign(&self) -> bool {
-        matches!(self, TokenKind::Assign)
-    }
-
-    pub fn is_open_delim(&self, delim: Delimiter) -> bool {
-        match self {
-            TokenKind::OpenDelim(d) => delim == *d,
-            _ => false,
-        }
-    }
-
     pub fn is_close_delim(&self, delim: Delimiter) -> bool {
         match self {
             TokenKind::CloseDelim(d) => delim == *d,
@@ -149,7 +144,7 @@ impl Token {
     }
 }
 
-#[derive(Clone, PartialEq, Hash, Debug, Copy)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Copy)]
 pub enum BinOp {
     Add,
     Sub,
@@ -161,20 +156,23 @@ pub enum BinOp {
     BitOr,
     Shl,
     Shr,
+    Eq,
     Gt,
     Lt,
+    Ptr,
 }
 
 impl BinOp {
     fn prec(&self) -> i32 {
         match self {
-            BinOp::Gt | BinOp::Lt => 1,
+            BinOp::Gt | BinOp::Lt | BinOp::Eq => 1,
             BinOp::Add | BinOp::Sub => 2,
             BinOp::Mul | BinOp::Div | BinOp::Mod => 3,
             BinOp::Pow => 5,
             BinOp::BitAnd => 6,
             BinOp::BitOr => 7,
             BinOp::Shl | BinOp::Shr => 8,
+            BinOp::Ptr => 9,
         }
     }
 }
@@ -195,8 +193,10 @@ impl TryFrom<&str> for BinOp {
             "|" => Ok(BitOr),
             ">" => Ok(Gt),
             "<" => Ok(Lt),
+            "==" => Ok(Eq),
             ">>" => Ok(Shr),
             "<<" => Ok(Shl),
+            "@" => Ok(Ptr),
             _ => Err(false),
         }
     }
@@ -218,6 +218,8 @@ impl ToString for BinOp {
             Shr => ">>".to_string(),
             Gt => ">".to_string(),
             Lt => "<".to_string(),
+            Ptr => "@".to_string(),
+            Eq => "==".to_string(),
         }
     }
 }
@@ -312,7 +314,7 @@ fn lex_number(lex: &Lex, pos: &mut Pos) -> Option<Token> {
 }
 
 fn lex_delim(lex: &Lex, pos: &mut Pos) -> Option<Token> {
-    let mut start_pos = *pos;
+    let start_pos = *pos;
 
     if let Some((delim, open)) = pos.advance(&lex.file).unwrap().as_delim() {
         if open {
@@ -350,7 +352,7 @@ fn skip_comments(lex: &Lex, pos: &mut Pos) -> Option<Token> {
 }
 
 fn lex_op(lex: &Lex, pos: &mut Pos) -> Option<Token> {
-    let mut start_pos = *pos;
+    let start_pos = *pos;
     let mut s = pos.advance(&lex.file).unwrap().to_string();
     if let Ok(tok) = s.as_str().try_into() {
         if pos.peek_is(&lex.file, '=') {
@@ -393,12 +395,12 @@ fn lex_op(lex: &Lex, pos: &mut Pos) -> Option<Token> {
 }
 
 fn lex_ident(lex: &Lex, pos: &mut Pos) -> Option<Token> {
-    let mut from = *pos;
+    let from = *pos;
 
     let mut ident_str = String::new();
     ident_str.push(pos.advance(&lex.file).unwrap());
     while let Some(next_char) = pos.peek(&lex.file) {
-        if next_char.is_alphanumeric() {
+        if next_char.is_alphanumeric() || next_char == '_' {
             pos.advance(&lex.file);
             ident_str.push(next_char);
         } else {
@@ -438,7 +440,12 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                 }
                 '=' => {
                     pos.advance(&lex.file);
-                    Some(Token::new(TokenKind::Assign, Span::single(*pos)))
+                    if pos.peek_is(&lex.file, '=') {
+                        pos.advance(&lex.file);
+                        Some(Token::new(TokenKind::BinOp(BinOp::Eq), Span::single(*pos)))
+                    } else {
+                        Some(Token::new(TokenKind::Assign, Span::single(*pos)))
+                    }
                 }
                 '"' => {
                     let start_pos = *pos;
@@ -464,7 +471,7 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                     }
                     Some(Token::new(TokenKind::String(s), Span::new(start_pos, *pos)))
                 }
-                n if n.is_ascii_punctuation() => {
+                n if n.is_ascii_punctuation() && n != '_' => {
                     if n == '/' {
                         let op = lex_op(lex, pos);
                         if let Some(tok) = skip_comments(lex, pos) {
