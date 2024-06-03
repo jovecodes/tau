@@ -8,6 +8,8 @@ use std::fs;
 pub enum Keyword {
     Return,
     Function,
+    Struct,
+    Dynamic,
     If,
     Else,
     Var,
@@ -16,6 +18,8 @@ pub enum Keyword {
     String,
     Bool,
     Null,
+    True,
+    False,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -25,6 +29,8 @@ impl TryFrom<&str> for Keyword {
         match value {
             "return" => Ok(Keyword::Return),
             "fn" => Ok(Keyword::Function),
+            "struct" => Ok(Keyword::Struct),
+            "dyn" => Ok(Keyword::Dynamic),
             "else" => Ok(Keyword::Else),
             "if" => Ok(Keyword::If),
             "var" => Ok(Keyword::Var),
@@ -33,6 +39,8 @@ impl TryFrom<&str> for Keyword {
             "string" => Ok(Keyword::String),
             "bool" => Ok(Keyword::Bool),
             "null" => Ok(Keyword::Null),
+            "true" => Ok(Keyword::True),
+            "false" => Ok(Keyword::False),
             _ => Err(false),
         }
     }
@@ -50,11 +58,14 @@ pub enum TokenKind {
     OpenDelim(Delimiter),
     CloseDelim(Delimiter),
     Keyword(Keyword),
+    FatArrow,
     Semi,
+    Colon,
     Assign,
     LogAnd,
     LogOr,
     Comma,
+    Dot,
 }
 
 impl TokenKind {
@@ -76,27 +87,104 @@ impl TokenKind {
     pub fn as_bin_op(&self) -> Option<BinOp> {
         match self {
             TokenKind::BinOp(b) => Some(*b),
-            TokenKind::BinOpEq(b) => Some(*b),
             _ => None,
         }
     }
 
-    pub fn as_int(&self) -> u32 {
+    pub fn as_int(&self) -> (u32, i64) {
         match self {
-            TokenKind::Ident(_) => 1,
-            TokenKind::Int(_) => 2,
-            TokenKind::Float(_) => 3,
-            TokenKind::BinOp(_) => 4,
-            TokenKind::BinOpEq(_) => 5,
-            TokenKind::OpenDelim(_) => 6,
-            TokenKind::CloseDelim(_) => 7,
-            TokenKind::Keyword(_) => 8,
-            TokenKind::Semi => 9,
-            TokenKind::Assign => 10,
-            TokenKind::LogAnd => 11,
-            TokenKind::LogOr => 12,
-            TokenKind::Comma => 13,
-            TokenKind::String(_) => 14,
+            TokenKind::Ident(_) => (1, 0),
+            TokenKind::Int(i) => (2, *i),
+            TokenKind::Float(f) => {
+                let bytes = f.to_le_bytes();
+                let mut int_value = 0i64;
+                for (i, &byte) in bytes.iter().enumerate() {
+                    int_value |= (byte as i64) << (i * 8);
+                }
+                (3, int_value)
+            }
+            TokenKind::BinOp(op) => (
+                4,
+                match op {
+                    BinOp::Add => 1,
+                    BinOp::Sub => 2,
+                    BinOp::Mul => 3,
+                    BinOp::Div => 4,
+                    BinOp::Mod => 5,
+                    BinOp::Pow => 6,
+                    BinOp::BitAnd => 7,
+                    BinOp::BitOr => 8,
+                    BinOp::Shl => 9,
+                    BinOp::Shr => 10,
+                    BinOp::Eq => 11,
+                    BinOp::Gt => 12,
+                    BinOp::Lt => 13,
+                    BinOp::Ptr => 14,
+                },
+            ),
+            TokenKind::BinOpEq(op) => (
+                5,
+                match op {
+                    BinOp::Add => 1,
+                    BinOp::Sub => 2,
+                    BinOp::Mul => 3,
+                    BinOp::Div => 4,
+                    BinOp::Mod => 5,
+                    BinOp::Pow => 6,
+                    BinOp::BitAnd => 7,
+                    BinOp::BitOr => 8,
+                    BinOp::Shl => 9,
+                    BinOp::Shr => 10,
+                    BinOp::Eq => 11,
+                    BinOp::Gt => 12,
+                    BinOp::Lt => 13,
+                    BinOp::Ptr => 14,
+                },
+            ),
+            TokenKind::OpenDelim(d) => (
+                6,
+                match d {
+                    Delimiter::Paren => 1,
+                    Delimiter::Brace => 2,
+                    Delimiter::Bracket => 3,
+                },
+            ),
+            TokenKind::CloseDelim(d) => (
+                7,
+                match d {
+                    Delimiter::Paren => 1,
+                    Delimiter::Brace => 2,
+                    Delimiter::Bracket => 3,
+                },
+            ),
+            TokenKind::Keyword(k) => (
+                8,
+                match k {
+                    Keyword::Return => 1,
+                    Keyword::Function => 2,
+                    Keyword::If => 3,
+                    Keyword::Else => 4,
+                    Keyword::Var => 5,
+                    Keyword::Int => 6,
+                    Keyword::Float => 7,
+                    Keyword::String => 8,
+                    Keyword::Bool => 9,
+                    Keyword::Null => 10,
+                    Keyword::Dynamic => 11,
+                    Keyword::Struct => 12,
+                    Keyword::True => 13,
+                    Keyword::False => 14,
+                },
+            ),
+            TokenKind::Semi => (9, 0),
+            TokenKind::Assign => (10, 0),
+            TokenKind::LogAnd => (11, 0),
+            TokenKind::LogOr => (12, 0),
+            TokenKind::Comma => (13, 0),
+            TokenKind::String(_) => (14, 0),
+            TokenKind::Colon => (15, 0),
+            TokenKind::FatArrow => (16, 0),
+            TokenKind::Dot => (17, 0),
         }
     }
 
@@ -127,7 +215,10 @@ impl TokenKindName for u32 {
             10 => "Assign".to_string(),
             11 => "LogAnd".to_string(),
             12 => "LogOr".to_string(),
-            _ => "Unknown".to_string(),
+            14 => "String".to_string(),
+            15 => "Colon".to_string(),
+            17 => "Dot".to_string(),
+            v => format!("Unknown({v})"),
         }
     }
 }
@@ -431,20 +522,36 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                 n if n.is_numeric() => lex_number(lex, pos),
                 n if n.is_delim() => lex_delim(lex, pos),
                 ';' => {
+                    let span = Span::single(*pos);
                     pos.advance(&lex.file);
-                    Some(Token::new(TokenKind::Semi, Span::single(*pos)))
+                    Some(Token::new(TokenKind::Semi, span))
+                }
+                '.' => {
+                    let span = Span::single(*pos);
+                    pos.advance(&lex.file);
+                    Some(Token::new(TokenKind::Dot, span))
+                }
+                ':' => {
+                    let span = Span::single(*pos);
+                    pos.advance(&lex.file);
+                    Some(Token::new(TokenKind::Colon, span))
                 }
                 ',' => {
+                    let span = Span::single(*pos);
                     pos.advance(&lex.file);
-                    Some(Token::new(TokenKind::Comma, Span::single(*pos)))
+                    Some(Token::new(TokenKind::Comma, span))
                 }
                 '=' => {
+                    let span = Span::single(*pos);
                     pos.advance(&lex.file);
                     if pos.peek_is(&lex.file, '=') {
                         pos.advance(&lex.file);
-                        Some(Token::new(TokenKind::BinOp(BinOp::Eq), Span::single(*pos)))
+                        Some(Token::new(TokenKind::BinOp(BinOp::Eq), span))
+                    } else if pos.peek_is(&lex.file, '>') {
+                        pos.advance(&lex.file);
+                        Some(Token::new(TokenKind::FatArrow, span))
                     } else {
-                        Some(Token::new(TokenKind::Assign, Span::single(*pos)))
+                        Some(Token::new(TokenKind::Assign, span))
                     }
                 }
                 '"' => {

@@ -5,7 +5,7 @@ mod pos;
 
 use error::Log;
 use lex::BinOp;
-use parse::{AstKind, AstNode, LexVisiter, Number, Path, VarType};
+use parse::{Array, AstKind, AstNode, ElseBlock, LexVisiter, Number, Path, VarType};
 
 fn var_type_to_c(var_type: &VarType, visiter: &LexVisiter) -> String {
     match var_type {
@@ -17,10 +17,11 @@ fn var_type_to_c(var_type: &VarType, visiter: &LexVisiter) -> String {
         VarType::String => "String".to_owned(),
         VarType::Bool => "bool".to_owned(),
         VarType::Function(_) => todo!(),
-        VarType::User(_) => todo!(),
+        VarType::Struct(st) => st.name.clone(),
         VarType::Ref(inner) => var_type_to_c(inner, visiter) + "*",
         VarType::Deref(inner) => var_type_to_c(inner, visiter) + "*",
         VarType::Ptr(inner) => var_type_to_c(inner, visiter) + "*",
+        VarType::Array(_) => todo!(),
     }
 }
 
@@ -40,7 +41,7 @@ fn path_to_c(path: &Path, visiter: &LexVisiter) -> String {
 
 fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
     match &node.kind {
-        parse::AstKind::Path(path) => path_to_c(path, visiter),
+        parse::AstKind::Ident(id) => visiter.get_id(&id).unwrap().name.clone(),
         parse::AstKind::BinOp(lhs, op, rhs) => {
             let mut output = String::new();
             output += &to_c(&lhs, visiter);
@@ -102,11 +103,17 @@ fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
             output
         }
         parse::AstKind::VarDecl(t, id, expr) => {
-            var_type_to_c(t, visiter)
-                + " "
-                + &visiter.get_id(id).unwrap().name
-                + " = "
-                + &to_c(expr, visiter)
+            let mut output = String::new();
+            let var = visiter.get_id(id).unwrap();
+            if var.constant {
+                output += "const ";
+            }
+            output += &var_type_to_c(t, visiter);
+            output += " ";
+            output += &var.name;
+            output += " = ";
+            output += &to_c(expr, visiter);
+            output
         }
         parse::AstKind::Return(val) => "return ".to_string() + &to_c(val, visiter),
         parse::AstKind::Number(parse::Number::Int(n)) => n.to_string(),
@@ -117,7 +124,7 @@ fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
         }
         parse::AstKind::FunCall(path, params) => {
             let mut output = String::new();
-            output += &path_to_c(path, visiter);
+            output += &to_c(path, visiter);
             output += "(";
             if !params.is_empty() {
                 for param in params[..params.len() - 1].iter() {
@@ -149,12 +156,12 @@ fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
             output += ") ";
             output += &to_c(&if_stmt.block, visiter);
             match &if_stmt.else_if {
-                parse::ElseBlock::Nothing => (),
-                parse::ElseBlock::ElseIf(stmt) => {
+                ElseBlock::Nothing => (),
+                ElseBlock::ElseIf(stmt) => {
                     output += "else ";
                     output += &to_c(&stmt, visiter);
                 }
-                parse::ElseBlock::Else(block) => {
+                ElseBlock::Else(block) => {
                     output += "else ";
                     output += &to_c(&block, visiter);
                 }
@@ -162,13 +169,126 @@ fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
             output
         }
         AstKind::Null => "NULL".to_string(),
+        AstKind::ArrayLit(elements) => {
+            let mut output = String::new();
+            output += "{";
+            for element in elements {
+                output += &to_c(&element, visiter);
+                output += ",";
+            }
+            output += "}";
+            output
+        }
+        AstKind::BinOpEq(path, op, val) => {
+            let mut output = String::new();
+            output += &to_c(path, visiter);
+            output += &format!(" {}= ", op.to_string());
+            output += &to_c(val, visiter);
+            output
+        }
+        AstKind::Assign(path, val) => {
+            let mut output = String::new();
+            output += &to_c(path, visiter);
+            output += " = ";
+            output += &to_c(val, visiter);
+            output
+        }
+        // AstKind::InlineBlock(block) => {
+        //     let mut output = String::new();
+        //     output += "{ return (";
+        //     output += &to_c(&block.expr, visiter);
+        //     output += "); }\n";
+        //     output
+        // }
+        AstKind::ExprRet(inner) => {
+            let mut output = String::new();
+            output += "=> ";
+            output += &to_c(inner, visiter);
+            output
+        }
+        AstKind::StructDecl(id, s) => {
+            let mut output = String::new();
+            let name = &visiter.get_id(&id).unwrap().name;
+            output += "typedef struct ";
+            output += name;
+            output += " {\n";
+            for field in &s.fields {
+                output += &to_c(&field, visiter);
+            }
+            output += "} ";
+            output += name;
+            output += ";\n";
+
+            output
+        }
+        AstKind::Field(field) => {
+            let mut output = String::new();
+            output += &var_type_to_c(&field.kind, visiter);
+            output += " ";
+            output += &field.name;
+            output += ";\n";
+
+            output
+        }
+        AstKind::Bool(b) => b.to_string(),
+        AstKind::StructLit(lit) => {
+            let mut output = String::new();
+
+            output += "(";
+            output += &var_type_to_c(&visiter.get_id(&lit.id).unwrap().kind, visiter);
+            output += ") ";
+
+            output += "{";
+            for (name, val) in &lit.fields {
+                output += ".";
+                output += &name;
+                output += " = ";
+                output += &to_c(val, visiter);
+                output += ",\n";
+            }
+            output += "};\n";
+
+            output
+        }
+        AstKind::Access(lhs, ident, deref) => {
+            if *deref {
+                to_c(lhs, visiter) + "->" + &ident
+            } else {
+                to_c(lhs, visiter) + "." + &ident
+            }
+        }
+    }
+}
+
+fn check_if_to_be(ast: &AstNode, visiter: &LexVisiter, kind: &mut Option<VarType>) {
+    match &ast.kind {
+        AstKind::Block(block) => {
+            for stmt in &block.stmts {
+                match &stmt.kind {
+                    AstKind::ExprRet(ret) => {
+                        let new = var_type_of(&ret, visiter);
+                        if let Some(old) = kind {
+                            if !old.clone().loosy_eq(new.clone()) {
+                                visiter.error(format!("Expected if statement to have return type of {old:?} but this has a type of {new:?}"), "".to_string(), &ret.span)
+                            }
+                        }
+                        *kind = Some(new);
+                    }
+                    _ => {}
+                }
+                if kind.is_none() {
+                    *kind = Some(VarType::Void);
+                }
+            }
+        }
+        _ => unreachable!(),
     }
 }
 
 fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
     match &ast.kind {
-        AstKind::Path(path) => {
-            let path_id = visiter.get_id(&path.segments.last().unwrap().id);
+        AstKind::Ident(id) => {
+            let path_id = visiter.get_id(&id);
             match path_id {
                 Some(info) => info.kind.clone(),
                 None => todo!(),
@@ -200,7 +320,6 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
                 }
                 VarType::Ptr(inner) => {
                     let inner_lhs = inner.as_ref().clone();
-                    dbg!(&inner_lhs);
                     let inner_rhs = match var_type_of(&rhs, visiter) {
                         VarType::Ptr(inner) => inner.as_ref().clone(),
                         _ => {
@@ -246,6 +365,7 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
         AstKind::Block(block) => block.expected_return.clone(),
         AstKind::Function(_, _) => VarType::Void,
         AstKind::FunctionDecl(_, _) => VarType::Void,
+        AstKind::StructDecl(_, _) => VarType::Void,
         AstKind::VarDecl(_, _, _) => VarType::Void,
         AstKind::Return(val) => var_type_of(val, visiter),
         AstKind::Number(Number::Int(_)) => VarType::Int,
@@ -253,10 +373,10 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
         AstKind::String(_) => VarType::String,
         AstKind::Parameter(var_type, _) => var_type.clone(),
         AstKind::FunCall(path, _) => visiter
-            .get_id(&path.segments.last().unwrap().id)
+            .get_id(&visiter.get_access_id(&path))
             .unwrap_or_else(|| {
                 visiter.error(
-                    format!("{} not defined", path_to_c(path, visiter)),
+                    format!("{} not defined", to_c(path, visiter)),
                     "".to_string(),
                     &ast.span,
                 );
@@ -279,8 +399,61 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
             }
         },
         AstKind::Pointer(inner) => VarType::Ptr(Box::new(var_type_of(inner, visiter))),
-        AstKind::If(_) => VarType::Void,
+        AstKind::If(if_stmt) => {
+            let mut kind: Option<VarType> = None;
+            let mut current_if = if_stmt;
+            loop {
+                check_if_to_be(&current_if.block, visiter, &mut kind);
+                match &current_if.else_if {
+                    ElseBlock::Nothing => break,
+                    ElseBlock::ElseIf(stmt) => {
+                        if let AstKind::If(new_if) = &stmt.kind {
+                            current_if = new_if;
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    ElseBlock::Else(block) => {
+                        check_if_to_be(&block, visiter, &mut kind);
+                        break;
+                    }
+                }
+            }
+            kind.unwrap_or(VarType::Void)
+        }
         AstKind::Null => VarType::Ptr(Box::new(VarType::Any)),
+        AstKind::ArrayLit(elements) => {
+            if elements.is_empty() {
+                return VarType::Array(Array {
+                    var_type: Box::new(VarType::Any),
+                    size: parse::ArraySize::FixedKnown(0),
+                });
+            }
+
+            let var_type = var_type_of(elements.first().unwrap(), visiter);
+            for element in elements.iter().skip(1) {
+                let element_type = var_type_of(element, visiter);
+                if !element_type.clone().loosy_eq(var_type.clone()) {
+                    visiter.error(
+                        format!("Expected array of {var_type:?} but found element of type {element_type:?}"),
+                        "".to_string(),
+                        &element.span,
+                    );
+                    unreachable!()
+                }
+            }
+            VarType::Array(Array {
+                var_type: Box::new(var_type),
+                size: parse::ArraySize::FixedKnown(elements.len() as i64),
+            })
+        }
+        AstKind::BinOpEq(_, _, _) => VarType::Void,
+        AstKind::Assign(_, _) => VarType::Void,
+        AstKind::ExprRet(inner) => var_type_of(inner, visiter),
+        AstKind::Field(field) => field.kind.clone(),
+        AstKind::Bool(_) => VarType::Bool,
+        AstKind::StructLit(lit) => visiter.get_id(&lit.id).unwrap().kind.clone(),
+        AstKind::Access(_, _, _) => todo!(),
     }
 }
 
@@ -291,11 +464,13 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                 type_check(item, visiter, VarType::Void);
             }
         }
-        AstKind::Function(_id, func) => {
-            if let Some(b) = &func.block {
-                type_check(b.as_ref(), visiter, func.ret_type.clone())
-            }
-        }
+        AstKind::Function(_id, func) => match &func.block {
+            Some(b) => match &b.kind {
+                AstKind::Block(_) => type_check(b, visiter, func.ret_type.clone()),
+                _ => unreachable!(),
+            },
+            None => {}
+        },
         AstKind::Block(block) => {
             for stmt in &block.stmts {
                 type_check(stmt, visiter, block.expected_return.clone());
@@ -310,6 +485,12 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                     &ast.span,
                 )
             }
+            type_check(&if_stmt.block, visiter, expected_type.clone());
+            match &if_stmt.else_if {
+                ElseBlock::Nothing => {}
+                ElseBlock::ElseIf(stmt) => type_check(stmt, visiter, expected_type),
+                ElseBlock::Else(stmt) => type_check(stmt, visiter, expected_type),
+            }
         }
         AstKind::VarDecl(var_type, _id, val) => {
             match var_type {
@@ -318,7 +499,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                 }
                 t => {
                     let expr_t = var_type_of(val, visiter);
-                    if *t != expr_t {
+                    if !t.clone().loosy_eq(expr_t.clone()) {
                         visiter.error(
                             format!("Expected expression of type {t:?} but found one of type {expr_t:?}"),
                             "".to_string(),
@@ -339,7 +520,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
             }
         }
         AstKind::FunCall(path, params) => {
-            let path_id = visiter.get_id(&path.segments.last().unwrap().id);
+            let path_id = visiter.get_id(&visiter.get_access_id(&path));
             match path_id {
                 Some(info) => match &info.kind {
                     VarType::Function(func) => {
@@ -372,8 +553,149 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                 None => todo!(),
             }
         }
+        AstKind::BinOpEq(path, op, val) => {
+            let path_id = visiter.get_id(&visiter.get_access_id(&path));
+            let var_type = match path_id {
+                Some(info) => info.kind.clone(),
+                None => todo!(),
+            };
+
+            match &var_type {
+                VarType::Int | VarType::Float | VarType::String => {
+                    if var_type_of(val, visiter) != var_type {
+                        visiter.error(
+                            format!(
+                                "Can not {} differing types of {:?} and {:?} without a cast",
+                                op.to_string(),
+                                var_type,
+                                var_type_of(val, visiter)
+                            ),
+                            "Add a 'xx' before the val to cast it".to_string(),
+                            &ast.span,
+                        );
+                        unreachable!()
+                    }
+                }
+                VarType::Ptr(inner) => {
+                    let inner_lhs = inner.as_ref().clone();
+                    let inner_val = match var_type_of(&val, visiter) {
+                        VarType::Ptr(inner) => inner.as_ref().clone(),
+                        _ => {
+                            visiter.error(
+                                format!("Expected pointer but found {val:?}"),
+                                "".to_string(),
+                                &val.span,
+                            );
+                            unreachable!()
+                        }
+                    };
+
+                    if !inner_lhs.loosy_eq(inner_val) {
+                        visiter.error(
+                            format!(
+                                "Can not {} differing types of {:?} and {:?} without a cast",
+                                op.to_string(),
+                                var_type,
+                                var_type_of(val, visiter)
+                            ),
+                            "Add a 'xx' before the val to cast it".to_string(),
+                            &ast.span,
+                        );
+                        unreachable!()
+                    }
+                }
+                _ => {
+                    visiter.error(
+                        format!("Operator overloading not implemented yet"),
+                        "".to_string(),
+                        &ast.span,
+                    );
+                    unreachable!()
+                }
+            }
+        }
+        AstKind::Assign(path, val) => {
+            let path_id = visiter.get_id(&visiter.get_access_id(&path));
+            let var_type = match path_id {
+                Some(info) => info.kind.clone(),
+                None => todo!(),
+            };
+            if !var_type.clone().loosy_eq(var_type_of(val, visiter)) {
+                visiter.error(
+                    format!(
+                        "Could not assign value of type {:?} to variable '{}' of type {:?}",
+                        var_type_of(val, visiter),
+                        visiter.get_id(&visiter.get_access_id(&path)).unwrap().name,
+                        var_type,
+                    ),
+                    "".to_string(),
+                    &ast.span,
+                )
+            }
+        }
         _ => (),
     }
+}
+
+fn const_check(ast: &AstNode, visiter: &mut LexVisiter) {
+    match &ast.kind {
+        AstKind::Items(items) => {
+            for item in items {
+                const_check(item, visiter);
+            }
+        }
+        AstKind::Function(_id, func) => {
+            if let Some(b) = &func.block {
+                const_check(b.as_ref(), visiter)
+            }
+        }
+        AstKind::Block(block) => {
+            for stmt in &block.stmts {
+                const_check(stmt, visiter);
+            }
+        }
+        AstKind::If(if_stmt) => {
+            const_check(&if_stmt.block, visiter);
+            match &if_stmt.else_if {
+                ElseBlock::Nothing => {}
+                ElseBlock::ElseIf(stmt) => const_check(stmt, visiter),
+                ElseBlock::Else(stmt) => const_check(stmt, visiter),
+            }
+        }
+        AstKind::VarDecl(_, _, val) => const_check(val, visiter),
+        AstKind::Return(val) => const_check(val, visiter),
+        AstKind::FunCall(_, params) => {
+            for param in params {
+                const_check(param, visiter);
+            }
+        }
+        AstKind::BinOpEq(path, _, _) => {
+            let var = visiter.get_id(&visiter.get_access_id(&path)).unwrap();
+            if var.constant {
+                visiter.error(
+                    format!("Could not assign value to constant variable '{}'", var.name),
+                    "Consider changing this to not be constant".to_string(),
+                    &ast.span,
+                )
+            }
+        }
+        AstKind::Assign(path, _) => {
+            let var = visiter.get_id(&visiter.get_access_id(&path)).unwrap();
+            if var.constant {
+                visiter.error(
+                    format!("Could not assign value to constant variable '{}'", var.name),
+                    "Consider removing constant specifier from this".to_string(),
+                    &ast.span,
+                )
+            }
+        }
+        _ => (),
+    }
+}
+
+fn semantic_analyse(ast: &AstNode, visiter: &mut LexVisiter) {
+    type_check(&ast, visiter, VarType::Void);
+    const_check(&ast, visiter);
 }
 
 fn main() {
@@ -384,12 +706,11 @@ fn main() {
         panic!("fatal error: no input files");
     }
 
-    let lex = dbg!(lex::lex_file(args[1].clone()));
+    let lex = lex::lex_file(args[1].clone());
     let mut visiter = parse::LexVisiter::new(&lex);
 
-    if let Ok(ast) = parse::parse_items(&mut visiter) {
-        dbg!(&ast);
-        type_check(&ast, &mut visiter, VarType::Void);
+    if let Ok(ast) = dbg!(parse::parse_items(&mut visiter)) {
+        semantic_analyse(&ast, &mut visiter);
 
         let mut output = String::new();
         output += "#include <stdio.h>\n";

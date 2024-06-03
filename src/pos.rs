@@ -1,4 +1,4 @@
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Pos {
     pub line: u64,
     pub column: u64,
@@ -69,7 +69,7 @@ impl Pos {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct Span {
     pub from: Pos,
     pub to: Pos,
