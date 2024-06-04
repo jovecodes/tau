@@ -222,10 +222,10 @@ impl<'a> LexVisiter<'a> {
         return self.symbols.items.get(id);
     }
 
-    pub fn get_access_id(&self, path: &AstNode) -> ID {
-        match &path.kind {
+    pub fn get_access_id(&self, path: &mut AstNode) -> ID {
+        match &mut path.kind {
             AstKind::Ident(id) => id.clone(),
-            AstKind::Access(lhs, access, _) => match var_type_of(lhs, self) {
+            AstKind::Access(lhs, access, _) => match var_type_of(lhs, self, VarType::Any) {
                 VarType::Struct(s) => {
                     for field in &s.fields {
                         if let AstKind::Field(f) = &field.kind {
@@ -522,7 +522,7 @@ fn parse_fn_call<'a>(lex: &'a mut LexVisiter, path: AstNode) -> Result<AstNode, 
 
 fn parse_struct_lit<'a>(
     lex: &'a mut LexVisiter,
-    struct_type: AstNode,
+    mut struct_type: AstNode,
     start_pos: Pos,
 ) -> Result<AstNode, ()> {
     lex.expect_auto_err(TokenKind::OpenDelim(Delimiter::Paren).as_int());
@@ -564,7 +564,7 @@ fn parse_struct_lit<'a>(
     dbg!(lex.tokens.peek());
     Ok(AstNode::new(
         AstKind::StructLit(StructLit {
-            id: lex.get_access_id(&struct_type),
+            id: lex.get_access_id(&mut struct_type),
             fields,
         }),
         Span::new(start_pos, to_pos),
@@ -575,7 +575,7 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     match lex.tokens.peek().map(|x| &x.kind) {
         Some(TokenKind::Ident(ident)) => {
             let span = lex.tokens.next().unwrap().span.clone();
-            let path = parse_access(
+            let mut path = parse_access(
                 lex,
                 AstNode::new(
                     AstKind::Ident(lex.find_id(ident).unwrap_or_else(|| {
@@ -592,7 +592,7 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
 
             match lex.tokens.peek().map(|x| &x.kind) {
                 Some(TokenKind::OpenDelim(Delimiter::Paren)) => {
-                    match lex.get_id(&lex.get_access_id(&path)) {
+                    match lex.get_id(&lex.get_access_id(&mut path)) {
                         Some(info) => {
                             if matches!(info.kind, VarType::Struct(_)) {
                                 return parse_struct_lit(lex, path, span.from);
@@ -608,6 +608,9 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     return Ok(path);
                 }
             }
+        }
+        Some(TokenKind::OpenDelim(Delimiter::Brace)) => {
+            return parse_block(lex, true, VarType::Unknown)
         }
         _ => {}
     };
@@ -811,8 +814,17 @@ fn parse_var_decl_of_type<'a>(
         }
     };
 
+    let no_semi_needed = match lex.tokens.peek().map(|x| &x.kind) {
+        Some(TokenKind::Keyword(Keyword::If)) => true,
+        Some(TokenKind::OpenDelim(Delimiter::Brace)) => true,
+        _ => false,
+    };
+
     let value = parse_expression(lex)?;
-    lex.expect_auto_err(TokenKind::Semi.as_int());
+
+    if !no_semi_needed {
+        lex.expect_auto_err(TokenKind::Semi.as_int());
+    }
 
     let span = Span::new(from_pos, value.span.to);
 
@@ -1209,7 +1221,7 @@ fn parse_access<'a>(lex: &'a mut LexVisiter, lhs: AstNode) -> Result<AstNode, ()
             _ => unreachable!(),
         };
         let span = Span::new(res.span.from, ident.span.to);
-        let deref = match var_type_of(&res, lex) {
+        let deref = match var_type_of(&mut res, lex, VarType::Any) {
             VarType::Ref(_) => true,
             VarType::Ptr(_) => true,
             _ => false,

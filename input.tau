@@ -1,62 +1,13 @@
-fn println(string str);
-
-fn takes_pointer(int @x) {
-    if x == null {
-        
-    }
-}
-
 struct Point {
     float x,
     float y,
 }
 
-fn length(Point &p) float => (p.x + p.y) ^ 0.5;
-
-fn square(int x) int => x * x;
+struct Rect {
+    Point min;
+    Point max;
+}
 
 fn main() int { 
-    int x = 10;
-
-    Point lit = Point(x: 10.0, y: 5.0);
-
-    int y = if x == 2 {
-        => 3;
-    } else if x == 3 {
-        => 9;
-    } else {
-        => 5;
-    };
-
-    if true => println("hello"); 
-
-/*
-    // Pattern Matching
-
-    match x {
-        1: println("its one!");
-        2: {
-            println("this is a block!");
-        }
-        else: println("nothing :(");
-    }
-
-    let t = match x {
-        1 => 2,
-        2 => 3,
-        else => 5,
-    }
-*/
-
-/* 
-    fn test(int @input) int@ {
-        int x = input?; // early return of null inputs
-        return x * 2;
-    }
-
-    int @n = null;
-    int x = x ?? 0;
-*/
-
-    return 0;
+    Rect t = Rect(min: Point(x: 1.0, y: 2.0), max: Point(x: 3.0, y: 4.0));
 }

@@ -260,13 +260,13 @@ fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
     }
 }
 
-fn check_if_to_be(ast: &AstNode, visiter: &LexVisiter, kind: &mut Option<VarType>) {
-    match &ast.kind {
+fn check_if_to_be(ast: &mut AstNode, visiter: &LexVisiter, kind: &mut Option<VarType>) {
+    match &mut ast.kind {
         AstKind::Block(block) => {
-            for stmt in &block.stmts {
-                match &stmt.kind {
+            for stmt in &mut block.stmts {
+                match &mut stmt.kind {
                     AstKind::ExprRet(ret) => {
-                        let new = var_type_of(&ret, visiter);
+                        let new = var_type_of(ret, visiter, kind.clone().unwrap_or(VarType::Void));
                         if let Some(old) = kind {
                             if !old.clone().loosy_eq(new.clone()) {
                                 visiter.error(format!("Expected if statement to have return type of {old:?} but this has a type of {new:?}"), "".to_string(), &ret.span)
@@ -285,8 +285,8 @@ fn check_if_to_be(ast: &AstNode, visiter: &LexVisiter, kind: &mut Option<VarType
     }
 }
 
-fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
-    match &ast.kind {
+fn var_type_of(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) -> VarType {
+    match &mut ast.kind {
         AstKind::Ident(id) => {
             let path_id = visiter.get_id(&id);
             match path_id {
@@ -295,16 +295,16 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
             }
         }
         AstKind::BinOp(lhs, op, rhs) => {
-            let var_type = var_type_of(lhs, visiter);
-            match &var_type {
+            let mut var_type = var_type_of(lhs, visiter, expected_type.clone());
+            match &mut var_type {
                 VarType::Int | VarType::Float | VarType::String => {
-                    if var_type_of(rhs, visiter) != var_type {
+                    if var_type_of(rhs, visiter, expected_type.clone()) != var_type {
                         visiter.error(
                             format!(
                                 "Can not {} differing types of {:?} and {:?} without a cast",
                                 op.to_string(),
-                                var_type_of(lhs, visiter),
-                                var_type_of(rhs, visiter)
+                                var_type_of(lhs, visiter, expected_type.clone()),
+                                var_type_of(rhs, visiter, expected_type)
                             ),
                             "Add a 'xx' before the rhs to cast it".to_string(),
                             &ast.span,
@@ -319,8 +319,8 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
                     }
                 }
                 VarType::Ptr(inner) => {
-                    let inner_lhs = inner.as_ref().clone();
-                    let inner_rhs = match var_type_of(&rhs, visiter) {
+                    let inner_lhs = inner.as_mut().clone();
+                    let inner_rhs = match var_type_of(rhs, visiter, expected_type.clone()) {
                         VarType::Ptr(inner) => inner.as_ref().clone(),
                         _ => {
                             visiter.error(
@@ -337,8 +337,8 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
                             format!(
                                 "Can not {} differing types of {:?} and {:?} without a cast",
                                 op.to_string(),
-                                var_type_of(lhs, visiter),
-                                var_type_of(rhs, visiter)
+                                var_type_of(lhs, visiter, expected_type.clone()),
+                                var_type_of(rhs, visiter, expected_type)
                             ),
                             "Add a 'xx' before the rhs to cast it".to_string(),
                             &ast.span,
@@ -362,18 +362,23 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
                 }
             }
         }
-        AstKind::Block(block) => block.expected_return.clone(),
+        AstKind::Block(block) => {
+            if block.expected_return == VarType::Unknown {
+                block.expected_return = expected_type;
+            }
+            block.expected_return.clone()
+        }
         AstKind::Function(_, _) => VarType::Void,
         AstKind::FunctionDecl(_, _) => VarType::Void,
         AstKind::StructDecl(_, _) => VarType::Void,
         AstKind::VarDecl(_, _, _) => VarType::Void,
-        AstKind::Return(val) => var_type_of(val, visiter),
+        AstKind::Return(val) => var_type_of(val, visiter, expected_type),
         AstKind::Number(Number::Int(_)) => VarType::Int,
         AstKind::Number(Number::Float(_)) => VarType::Float,
         AstKind::String(_) => VarType::String,
         AstKind::Parameter(var_type, _) => var_type.clone(),
         AstKind::FunCall(path, _) => visiter
-            .get_id(&visiter.get_access_id(&path))
+            .get_id(&visiter.get_access_id(path))
             .unwrap_or_else(|| {
                 visiter.error(
                     format!("{} not defined", to_c(path, visiter)),
@@ -385,8 +390,10 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
             .kind
             .clone(),
         AstKind::Items(_) => todo!(),
-        AstKind::Reference(inner) => VarType::Ref(Box::new(var_type_of(inner, visiter))),
-        AstKind::Dereference(inner) => match var_type_of(inner, visiter) {
+        AstKind::Reference(inner) => {
+            VarType::Ref(Box::new(var_type_of(inner, visiter, expected_type)))
+        }
+        AstKind::Dereference(inner) => match var_type_of(inner, visiter, expected_type) {
             VarType::Ref(inner) => inner.as_ref().clone(),
             VarType::Ptr(inner) => inner.as_ref().clone(),
             t => {
@@ -398,23 +405,25 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
                 unreachable!()
             }
         },
-        AstKind::Pointer(inner) => VarType::Ptr(Box::new(var_type_of(inner, visiter))),
+        AstKind::Pointer(inner) => {
+            VarType::Ptr(Box::new(var_type_of(inner, visiter, expected_type)))
+        }
         AstKind::If(if_stmt) => {
             let mut kind: Option<VarType> = None;
             let mut current_if = if_stmt;
             loop {
-                check_if_to_be(&current_if.block, visiter, &mut kind);
-                match &current_if.else_if {
+                check_if_to_be(&mut current_if.block, visiter, &mut kind);
+                match &mut current_if.else_if {
                     ElseBlock::Nothing => break,
                     ElseBlock::ElseIf(stmt) => {
-                        if let AstKind::If(new_if) = &stmt.kind {
+                        if let AstKind::If(new_if) = &mut stmt.kind {
                             current_if = new_if;
                         } else {
                             unreachable!()
                         }
                     }
                     ElseBlock::Else(block) => {
-                        check_if_to_be(&block, visiter, &mut kind);
+                        check_if_to_be(block, visiter, &mut kind);
                         break;
                     }
                 }
@@ -430,9 +439,13 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
                 });
             }
 
-            let var_type = var_type_of(elements.first().unwrap(), visiter);
-            for element in elements.iter().skip(1) {
-                let element_type = var_type_of(element, visiter);
+            let var_type = var_type_of(
+                elements.first_mut().unwrap(),
+                visiter,
+                expected_type.clone(),
+            );
+            for element in elements.iter_mut().skip(1) {
+                let element_type = var_type_of(element, visiter, expected_type.clone());
                 if !element_type.clone().loosy_eq(var_type.clone()) {
                     visiter.error(
                         format!("Expected array of {var_type:?} but found element of type {element_type:?}"),
@@ -449,7 +462,7 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
         }
         AstKind::BinOpEq(_, _, _) => VarType::Void,
         AstKind::Assign(_, _) => VarType::Void,
-        AstKind::ExprRet(inner) => var_type_of(inner, visiter),
+        AstKind::ExprRet(inner) => var_type_of(inner, visiter, expected_type),
         AstKind::Field(field) => field.kind.clone(),
         AstKind::Bool(_) => VarType::Bool,
         AstKind::StructLit(lit) => visiter.get_id(&lit.id).unwrap().kind.clone(),
@@ -457,27 +470,28 @@ fn var_type_of(ast: &AstNode, visiter: &LexVisiter) -> VarType {
     }
 }
 
-fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
-    match &ast.kind {
+fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
+    match &mut ast.kind {
         AstKind::Items(items) => {
             for item in items {
                 type_check(item, visiter, VarType::Void);
             }
         }
-        AstKind::Function(_id, func) => match &func.block {
-            Some(b) => match &b.kind {
+        AstKind::Function(_id, func) => match func.block.clone().as_mut() {
+            Some(b) => match &mut b.kind {
                 AstKind::Block(_) => type_check(b, visiter, func.ret_type.clone()),
                 _ => unreachable!(),
             },
             None => {}
         },
         AstKind::Block(block) => {
-            for stmt in &block.stmts {
+            for stmt in &mut block.stmts {
                 type_check(stmt, visiter, block.expected_return.clone());
             }
         }
         AstKind::If(if_stmt) => {
-            let conditional_type = var_type_of(&if_stmt.conditional, visiter);
+            let conditional_type =
+                var_type_of(&mut if_stmt.conditional, visiter, expected_type.clone());
             if conditional_type != VarType::Bool {
                 visiter.error(
                     format!("Expected expression of type bool in if statement but found one of type {conditional_type:?}"),
@@ -485,8 +499,8 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                     &ast.span,
                 )
             }
-            type_check(&if_stmt.block, visiter, expected_type.clone());
-            match &if_stmt.else_if {
+            type_check(&mut if_stmt.block, visiter, expected_type.clone());
+            match &mut if_stmt.else_if {
                 ElseBlock::Nothing => {}
                 ElseBlock::ElseIf(stmt) => type_check(stmt, visiter, expected_type),
                 ElseBlock::Else(stmt) => type_check(stmt, visiter, expected_type),
@@ -498,7 +512,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                     todo!()
                 }
                 t => {
-                    let expr_t = var_type_of(val, visiter);
+                    let expr_t = var_type_of(val, visiter, expected_type);
                     if !t.clone().loosy_eq(expr_t.clone()) {
                         visiter.error(
                             format!("Expected expression of type {t:?} but found one of type {expr_t:?}"),
@@ -510,7 +524,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
             }
         }
         AstKind::Return(val) => {
-            let expr_t = var_type_of(val, visiter);
+            let expr_t = var_type_of(val, visiter, expected_type.clone());
             if expected_type != expr_t {
                 visiter.error(
                     format!("Expected expression of type {expected_type:?} but found one of type {expr_t:?}"),
@@ -520,7 +534,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
             }
         }
         AstKind::FunCall(path, params) => {
-            let path_id = visiter.get_id(&visiter.get_access_id(&path));
+            let path_id = visiter.get_id(&visiter.get_access_id(path));
             match path_id {
                 Some(info) => match &info.kind {
                     VarType::Function(func) => {
@@ -536,9 +550,13 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                                 &ast.span,
                             )
                         }
-                        for (i, param) in params.iter().enumerate() {
-                            let found = var_type_of(param, visiter);
-                            let expected = var_type_of(&func.params[i], visiter);
+                        for (i, param) in params.iter_mut().enumerate() {
+                            let found = var_type_of(param, visiter, expected_type.clone());
+                            let expected = var_type_of(
+                                &mut func.params.clone()[i],
+                                visiter,
+                                expected_type.clone(),
+                            );
                             if found != expected {
                                 visiter.error(
                                     format!("Parameter {i} has expected type of {expected:?} but found {found:?}"),
@@ -554,7 +572,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
             }
         }
         AstKind::BinOpEq(path, op, val) => {
-            let path_id = visiter.get_id(&visiter.get_access_id(&path));
+            let path_id = visiter.get_id(&visiter.get_access_id(path));
             let var_type = match path_id {
                 Some(info) => info.kind.clone(),
                 None => todo!(),
@@ -562,13 +580,13 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
 
             match &var_type {
                 VarType::Int | VarType::Float | VarType::String => {
-                    if var_type_of(val, visiter) != var_type {
+                    if var_type_of(val, visiter, expected_type.clone()) != var_type {
                         visiter.error(
                             format!(
                                 "Can not {} differing types of {:?} and {:?} without a cast",
                                 op.to_string(),
                                 var_type,
-                                var_type_of(val, visiter)
+                                var_type_of(val, visiter, expected_type)
                             ),
                             "Add a 'xx' before the val to cast it".to_string(),
                             &ast.span,
@@ -578,7 +596,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                 }
                 VarType::Ptr(inner) => {
                     let inner_lhs = inner.as_ref().clone();
-                    let inner_val = match var_type_of(&val, visiter) {
+                    let inner_val = match var_type_of(val, visiter, expected_type.clone()) {
                         VarType::Ptr(inner) => inner.as_ref().clone(),
                         _ => {
                             visiter.error(
@@ -596,7 +614,7 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
                                 "Can not {} differing types of {:?} and {:?} without a cast",
                                 op.to_string(),
                                 var_type,
-                                var_type_of(val, visiter)
+                                var_type_of(val, visiter, expected_type)
                             ),
                             "Add a 'xx' before the val to cast it".to_string(),
                             &ast.span,
@@ -615,17 +633,20 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
             }
         }
         AstKind::Assign(path, val) => {
-            let path_id = visiter.get_id(&visiter.get_access_id(&path));
+            let path_id = visiter.get_id(&visiter.get_access_id(path));
             let var_type = match path_id {
                 Some(info) => info.kind.clone(),
                 None => todo!(),
             };
-            if !var_type.clone().loosy_eq(var_type_of(val, visiter)) {
+            if !var_type
+                .clone()
+                .loosy_eq(var_type_of(val, visiter, expected_type.clone()))
+            {
                 visiter.error(
                     format!(
                         "Could not assign value of type {:?} to variable '{}' of type {:?}",
-                        var_type_of(val, visiter),
-                        visiter.get_id(&visiter.get_access_id(&path)).unwrap().name,
+                        var_type_of(val, visiter, expected_type),
+                        visiter.get_id(&visiter.get_access_id(path)).unwrap().name,
                         var_type,
                     ),
                     "".to_string(),
@@ -637,26 +658,26 @@ fn type_check(ast: &AstNode, visiter: &mut LexVisiter, expected_type: VarType) {
     }
 }
 
-fn const_check(ast: &AstNode, visiter: &mut LexVisiter) {
-    match &ast.kind {
+fn const_check(ast: &mut AstNode, visiter: &mut LexVisiter) {
+    match &mut ast.kind {
         AstKind::Items(items) => {
             for item in items {
                 const_check(item, visiter);
             }
         }
         AstKind::Function(_id, func) => {
-            if let Some(b) = &func.block {
-                const_check(b.as_ref(), visiter)
+            if let Some(b) = &mut func.block.clone() {
+                const_check(b.as_mut(), visiter)
             }
         }
         AstKind::Block(block) => {
-            for stmt in &block.stmts {
+            for stmt in &mut block.stmts {
                 const_check(stmt, visiter);
             }
         }
         AstKind::If(if_stmt) => {
-            const_check(&if_stmt.block, visiter);
-            match &if_stmt.else_if {
+            const_check(&mut if_stmt.block, visiter);
+            match &mut if_stmt.else_if {
                 ElseBlock::Nothing => {}
                 ElseBlock::ElseIf(stmt) => const_check(stmt, visiter),
                 ElseBlock::Else(stmt) => const_check(stmt, visiter),
@@ -670,7 +691,7 @@ fn const_check(ast: &AstNode, visiter: &mut LexVisiter) {
             }
         }
         AstKind::BinOpEq(path, _, _) => {
-            let var = visiter.get_id(&visiter.get_access_id(&path)).unwrap();
+            let var = visiter.get_id(&visiter.get_access_id(path)).unwrap();
             if var.constant {
                 visiter.error(
                     format!("Could not assign value to constant variable '{}'", var.name),
@@ -680,7 +701,7 @@ fn const_check(ast: &AstNode, visiter: &mut LexVisiter) {
             }
         }
         AstKind::Assign(path, _) => {
-            let var = visiter.get_id(&visiter.get_access_id(&path)).unwrap();
+            let var = visiter.get_id(&visiter.get_access_id(path)).unwrap();
             if var.constant {
                 visiter.error(
                     format!("Could not assign value to constant variable '{}'", var.name),
@@ -693,9 +714,9 @@ fn const_check(ast: &AstNode, visiter: &mut LexVisiter) {
     }
 }
 
-fn semantic_analyse(ast: &AstNode, visiter: &mut LexVisiter) {
-    type_check(&ast, visiter, VarType::Void);
-    const_check(&ast, visiter);
+fn semantic_analyse(ast: &mut AstNode, visiter: &mut LexVisiter) {
+    type_check(ast, visiter, VarType::Void);
+    const_check(ast, visiter);
 }
 
 fn main() {
@@ -709,8 +730,8 @@ fn main() {
     let lex = lex::lex_file(args[1].clone());
     let mut visiter = parse::LexVisiter::new(&lex);
 
-    if let Ok(ast) = dbg!(parse::parse_items(&mut visiter)) {
-        semantic_analyse(&ast, &mut visiter);
+    if let Ok(mut ast) = dbg!(parse::parse_items(&mut visiter)) {
+        semantic_analyse(&mut ast, &mut visiter);
 
         let mut output = String::new();
         output += "#include <stdio.h>\n";
