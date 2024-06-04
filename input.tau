@@ -1,6 +1,6 @@
 struct Point {
-    float x,
-    float y,
+    float x;
+    float y;
 }
 
 struct Rect {

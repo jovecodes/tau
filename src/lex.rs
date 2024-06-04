@@ -215,6 +215,7 @@ impl TokenKindName for u32 {
             10 => "Assign".to_string(),
             11 => "LogAnd".to_string(),
             12 => "LogOr".to_string(),
+            13 => "Comma".to_string(),
             14 => "String".to_string(),
             15 => "Colon".to_string(),
             17 => "Dot".to_string(),

@@ -3,6 +3,8 @@ mod lex;
 mod parse;
 mod pos;
 
+use std::collections::HashSet;
+
 use error::Log;
 use lex::BinOp;
 use parse::{Array, AstKind, AstNode, ElseBlock, LexVisiter, Number, Path, VarType};
@@ -269,7 +271,7 @@ fn check_if_to_be(ast: &mut AstNode, visiter: &LexVisiter, kind: &mut Option<Var
                         let new = var_type_of(ret, visiter, kind.clone().unwrap_or(VarType::Void));
                         if let Some(old) = kind {
                             if !old.clone().loosy_eq(new.clone()) {
-                                visiter.error(format!("Expected if statement to have return type of {old:?} but this has a type of {new:?}"), "".to_string(), &ret.span)
+                                visiter.error(format!("Expected if statement to have return type of {old} but this has a type of {new}"), "".to_string(), &ret.span)
                             }
                         }
                         *kind = Some(new);
@@ -301,7 +303,7 @@ fn var_type_of(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) 
                     if var_type_of(rhs, visiter, expected_type.clone()) != var_type {
                         visiter.error(
                             format!(
-                                "Can not {} differing types of {:?} and {:?} without a cast",
+                                "Can not {} differing types of {} and {} without a cast",
                                 op.to_string(),
                                 var_type_of(lhs, visiter, expected_type.clone()),
                                 var_type_of(rhs, visiter, expected_type)
@@ -335,7 +337,7 @@ fn var_type_of(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) 
                     if !inner_lhs.loosy_eq(inner_rhs) {
                         visiter.error(
                             format!(
-                                "Can not {} differing types of {:?} and {:?} without a cast",
+                                "Can not {} differing types of {} and {} without a cast",
                                 op.to_string(),
                                 var_type_of(lhs, visiter, expected_type.clone()),
                                 var_type_of(rhs, visiter, expected_type)
@@ -398,7 +400,7 @@ fn var_type_of(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) 
             VarType::Ptr(inner) => inner.as_ref().clone(),
             t => {
                 visiter.error(
-                    format!("Trying to dereference non-pointer type {t:?}"),
+                    format!("Trying to dereference non-pointer type {t}"),
                     "".to_string(),
                     &ast.span,
                 );
@@ -448,7 +450,9 @@ fn var_type_of(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) 
                 let element_type = var_type_of(element, visiter, expected_type.clone());
                 if !element_type.clone().loosy_eq(var_type.clone()) {
                     visiter.error(
-                        format!("Expected array of {var_type:?} but found element of type {element_type:?}"),
+                        format!(
+                            "Expected array of {var_type} but found element of type {element_type}"
+                        ),
                         "".to_string(),
                         &element.span,
                     );
@@ -494,7 +498,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
                 var_type_of(&mut if_stmt.conditional, visiter, expected_type.clone());
             if conditional_type != VarType::Bool {
                 visiter.error(
-                    format!("Expected expression of type bool in if statement but found one of type {conditional_type:?}"),
+                    format!("Expected expression of type bool in if statement but found one of type {conditional_type}"),
                     "".to_string(),
                     &ast.span,
                 )
@@ -507,6 +511,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
             }
         }
         AstKind::VarDecl(var_type, _id, val) => {
+            type_check(val, visiter, var_type.clone());
             match var_type {
                 VarType::Unknown => {
                     todo!()
@@ -515,7 +520,9 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
                     let expr_t = var_type_of(val, visiter, expected_type);
                     if !t.clone().loosy_eq(expr_t.clone()) {
                         visiter.error(
-                            format!("Expected expression of type {t:?} but found one of type {expr_t:?}"),
+                            format!(
+                                "Expected expression of type {t} but found one of type {expr_t}"
+                            ),
                             "".to_string(),
                             &ast.span,
                         )
@@ -527,7 +534,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
             let expr_t = var_type_of(val, visiter, expected_type.clone());
             if expected_type != expr_t {
                 visiter.error(
-                    format!("Expected expression of type {expected_type:?} but found one of type {expr_t:?}"),
+                    format!("Expected expression of type {expected_type} but found one of type {expr_t}"),
                     "".to_string(),
                     &ast.span,
                 )
@@ -559,7 +566,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
                             );
                             if found != expected {
                                 visiter.error(
-                                    format!("Parameter {i} has expected type of {expected:?} but found {found:?}"),
+                                    format!("Parameter {i} has expected type of {expected} but found {found}"),
                                     "".to_string(),
                                     &ast.span,
                                 )
@@ -583,7 +590,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
                     if var_type_of(val, visiter, expected_type.clone()) != var_type {
                         visiter.error(
                             format!(
-                                "Can not {} differing types of {:?} and {:?} without a cast",
+                                "Can not {} differing types of {} and {} without a cast",
                                 op.to_string(),
                                 var_type,
                                 var_type_of(val, visiter, expected_type)
@@ -611,7 +618,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
                     if !inner_lhs.loosy_eq(inner_val) {
                         visiter.error(
                             format!(
-                                "Can not {} differing types of {:?} and {:?} without a cast",
+                                "Can not {} differing types of {} and {} without a cast",
                                 op.to_string(),
                                 var_type,
                                 var_type_of(val, visiter, expected_type)
@@ -644,7 +651,7 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
             {
                 visiter.error(
                     format!(
-                        "Could not assign value of type {:?} to variable '{}' of type {:?}",
+                        "Could not assign value of type {} to variable '{}' of type {}",
                         var_type_of(val, visiter, expected_type),
                         visiter.get_id(&visiter.get_access_id(path)).unwrap().name,
                         var_type,
@@ -654,7 +661,77 @@ fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
                 )
             }
         }
-        _ => (),
+        AstKind::StructLit(lit) => {
+            let st = visiter.get_id(&lit.id).unwrap();
+            let mut all_fields = HashSet::new();
+            match &st.kind {
+                VarType::Struct(s) => {
+                    for field_ast in &s.fields {
+                        if let AstKind::Field(f) = &field_ast.kind {
+                            all_fields.insert(&f.name);
+                            if let Some(field) = lit.fields.get(&f.name) {
+                                let mut field_copy = field.clone();
+                                let found = var_type_of(&mut field_copy, visiter, f.kind.clone());
+                                if !found.clone().loosy_eq(f.kind.clone()) {
+                                    visiter.error(
+                                        format!(
+                                            "Field '{}' has expected type '{}' but found type '{}'",
+                                            f.name, f.kind, found
+                                        ),
+                                        "".to_string(),
+                                        &ast.span,
+                                    )
+                                }
+                            }
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            for (name, _) in &lit.fields {
+                if all_fields.contains(name) {
+                    all_fields.remove(name);
+                } else {
+                    visiter.error(
+                        format!("Struct '{}' does not contain field '{}'", st.name, name),
+                        "".to_string(),
+                        &ast.span,
+                    )
+                }
+            }
+            for i in all_fields {
+                visiter.error(
+                    format!("Struct literal does not contain field '{i}'"),
+                    format!("Try adding \"{i}: {i}.default()"),
+                    &ast.span,
+                )
+            }
+        }
+        AstKind::Ident(_) => {}
+        AstKind::BinOp(lhs, _, rhs) => {
+            type_check(lhs, visiter, expected_type.clone());
+            type_check(rhs, visiter, expected_type);
+        }
+        AstKind::Field(_) => {}
+        AstKind::FunctionDecl(_, _) => {}
+        AstKind::StructDecl(_, _) => {}
+        AstKind::ExprRet(node) => type_check(node, visiter, expected_type),
+        AstKind::Number(_) => {}
+        AstKind::String(_) => {}
+        AstKind::Parameter(_, _) => {}
+        AstKind::Reference(node) => type_check(node, visiter, expected_type),
+        AstKind::Dereference(node) => type_check(node, visiter, expected_type),
+        AstKind::Pointer(node) => type_check(node, visiter, expected_type),
+        AstKind::ArrayLit(elements) => {
+            for i in elements {
+                type_check(i, visiter, expected_type.clone());
+            }
+        }
+        AstKind::Access(node, _, _) => type_check(node, visiter, expected_type),
+        AstKind::Null => {}
+        AstKind::Bool(_) => {}
     }
 }
 
@@ -720,7 +797,7 @@ fn semantic_analyse(ast: &mut AstNode, visiter: &mut LexVisiter) {
 }
 
 fn main() {
-    // std::env::set_var("RUST_BACKTRACE", "1");
+    std::env::set_var("RUST_BACKTRACE", "1");
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
