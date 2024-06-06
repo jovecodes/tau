@@ -1,0 +1,17 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-w",
+      "-I/home/jove/Code/JovialEngine/include",
+      "-I/home/jove/Code/JovialEngine/include/extern",
+      "-o",
+      "tau_temp",
+      "tau_temp.cpp"
+    ],
+    "directory": "/home/jove/Code/tau",
+    "file": "/home/jove/Code/tau/tau_temp.cpp",
+    "output": "/home/jove/Code/tau/tau_temp"
+  }
+]

@@ -40,7 +40,7 @@ impl TColor {
 }
 
 pub trait Log {
-    fn error(&self, msg: String, help: String, span: &Span);
+    fn error(&self, msg: String, help: String, span: &Span) -> !;
     fn warn(&self, msg: String, help: String, span: &Span);
     fn info(&self, msg: String, help: String, span: &Span);
 }
@@ -103,7 +103,7 @@ impl Logger<'_> {
 }
 
 impl Log for Lex {
-    fn error(&self, msg: String, help: String, span: &Span) {
+    fn error(&self, msg: String, help: String, span: &Span) -> ! {
         Logger {
             path: &self.path,
             file: &self.file,
@@ -144,11 +144,11 @@ impl Log for Lex {
     }
 }
 
-impl<'a> Log for LexVisiter<'a> {
-    fn error(&self, msg: String, help: String, span: &Span) {
+impl Log for LexVisiter {
+    fn error(&self, msg: String, help: String, span: &Span) -> ! {
         Logger {
-            path: &self.path,
-            file: &self.file,
+            path: &self.lexs[self.current_lex].path,
+            file: &self.lexs[self.current_lex].file,
             level: "Error",
             msg,
             help,
@@ -161,8 +161,8 @@ impl<'a> Log for LexVisiter<'a> {
 
     fn warn(&self, msg: String, help: String, span: &Span) {
         Logger {
-            path: &self.path,
-            file: &self.file,
+            path: &self.lexs[self.current_lex].path,
+            file: &self.lexs[self.current_lex].file,
             level: "Warning",
             msg,
             help,
@@ -174,8 +174,8 @@ impl<'a> Log for LexVisiter<'a> {
 
     fn info(&self, msg: String, help: String, span: &Span) {
         Logger {
-            path: &self.path,
-            file: &self.file,
+            path: &self.lexs[self.current_lex].path,
+            file: &self.lexs[self.current_lex].file,
             level: "Info",
             msg,
             help,

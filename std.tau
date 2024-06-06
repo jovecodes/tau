@@ -1,0 +1,8 @@
+fn test() {
+    #if "cpp" == "cpp" {
+    }
+}
+
+fn sqrt(float x) float {
+    return x;
+}

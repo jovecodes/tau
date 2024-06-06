@@ -1,822 +1,310 @@
+mod analysis;
+mod cpp_gen;
 mod error;
 mod lex;
 mod parse;
 mod pos;
 
-use std::collections::HashSet;
+use parse::{AstKind, AstNode, ElseBlock, LexVisiter};
+use std::io::Write;
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
 
-use error::Log;
-use lex::BinOp;
-use parse::{Array, AstKind, AstNode, ElseBlock, LexVisiter, Number, Path, VarType};
-
-fn var_type_to_c(var_type: &VarType, visiter: &LexVisiter) -> String {
-    match var_type {
-        VarType::Unknown => "unknown".to_owned(),
-        VarType::Any => "void".to_string(),
-        VarType::Void => "void".to_owned(),
-        VarType::Int => "int".to_owned(),
-        VarType::Float => "float".to_owned(),
-        VarType::String => "String".to_owned(),
-        VarType::Bool => "bool".to_owned(),
-        VarType::Function(_) => todo!(),
-        VarType::Struct(st) => st.name.clone(),
-        VarType::Ref(inner) => var_type_to_c(inner, visiter) + "*",
-        VarType::Deref(inner) => var_type_to_c(inner, visiter) + "*",
-        VarType::Ptr(inner) => var_type_to_c(inner, visiter) + "*",
-        VarType::Array(_) => todo!(),
-    }
-}
-
-fn path_to_c(path: &Path, visiter: &LexVisiter) -> String {
-    let mut output = String::new();
-    if !path.segments.is_empty() {
-        for seg in path.segments[..path.segments.len() - 1].iter() {
-            output += &visiter.get_id(&seg.id).unwrap().name;
-            output += "_";
-        }
-        if let Some(last) = path.segments.last() {
-            output += &visiter.get_id(&last.id).unwrap().name;
-        }
-    }
-    output
-}
-
-fn to_c(node: &AstNode, visiter: &LexVisiter) -> String {
-    match &node.kind {
-        parse::AstKind::Ident(id) => visiter.get_id(&id).unwrap().name.clone(),
-        parse::AstKind::BinOp(lhs, op, rhs) => {
-            let mut output = String::new();
-            output += &to_c(&lhs, visiter);
-            output += &format!(" {} ", op.to_string());
-            output += &to_c(&rhs, visiter);
-            output
-        }
-        parse::AstKind::Block(block) => {
-            let mut output = String::new();
-            output += "{\n";
-            for stmt in &block.stmts {
-                output += to_c(stmt, visiter).as_str();
-                output += ";\n";
-            }
-            output += "}\n";
-            output
-        }
-        parse::AstKind::Function(id, func) => {
-            let mut output = String::new();
-            output += &var_type_to_c(&func.ret_type, visiter);
-            output += " ";
-            output += &visiter.get_id(id).unwrap().name;
-
-            output.push('(');
-            if !func.params.is_empty() {
-                for param in func.params[..func.params.len() - 1].iter() {
-                    output += to_c(param, visiter).as_str();
-                    output += ", ";
-                }
-                if let Some(last) = func.params.last() {
-                    output += to_c(last, visiter).as_str();
-                }
-            }
-            output.push(')');
-
-            output.push(' ');
-            output += to_c(func.block.as_ref().unwrap(), visiter).as_str();
-
-            output
-        }
-        parse::AstKind::FunctionDecl(id, func) => {
-            let mut output = String::new();
-            output += &var_type_to_c(&func.ret_type, visiter);
-            output += " ";
-            output += &visiter.get_id(id).unwrap().name;
-
-            output.push('(');
-            if !func.params.is_empty() {
-                for param in func.params[..func.params.len() - 1].iter() {
-                    output += to_c(param, visiter).as_str();
-                    output += ", ";
-                }
-                if let Some(last) = func.params.last() {
-                    output += to_c(last, visiter).as_str();
-                }
-            }
-            output += ");\n";
-
-            output
-        }
-        parse::AstKind::VarDecl(t, id, expr) => {
-            let mut output = String::new();
-            let var = visiter.get_id(id).unwrap();
-            if var.constant {
-                output += "const ";
-            }
-            output += &var_type_to_c(t, visiter);
-            output += " ";
-            output += &var.name;
-            output += " = ";
-            output += &to_c(expr, visiter);
-            output
-        }
-        parse::AstKind::Return(val) => "return ".to_string() + &to_c(val, visiter),
-        parse::AstKind::Number(parse::Number::Int(n)) => n.to_string(),
-        parse::AstKind::Number(parse::Number::Float(n)) => n.to_string(),
-        parse::AstKind::String(s) => "\"".to_string() + &s + "\"",
-        parse::AstKind::Parameter(kind, id) => {
-            var_type_to_c(kind, visiter) + " " + &visiter.get_id(id).unwrap().name
-        }
-        parse::AstKind::FunCall(path, params) => {
-            let mut output = String::new();
-            output += &to_c(path, visiter);
-            output += "(";
-            if !params.is_empty() {
-                for param in params[..params.len() - 1].iter() {
-                    output += to_c(param, visiter).as_str();
-                    output += ", ";
-                }
-                if let Some(last) = params.last() {
-                    output += to_c(last, visiter).as_str();
-                }
-            }
-            output += ")";
-
-            output
-        }
-        parse::AstKind::Items(items) => {
-            let mut output = String::new();
-            for item in items {
-                output += to_c(item, visiter).as_str();
-            }
-            output
-        }
-        parse::AstKind::Reference(expr) => "&".to_string() + &to_c(expr, visiter),
-        parse::AstKind::Dereference(expr) => "*".to_string() + &to_c(expr, visiter),
-        parse::AstKind::Pointer(expr) => "&".to_string() + &to_c(expr, visiter),
-        AstKind::If(if_stmt) => {
-            let mut output = String::new();
-            output += "if (";
-            output += &to_c(&if_stmt.conditional, visiter);
-            output += ") ";
-            output += &to_c(&if_stmt.block, visiter);
-            match &if_stmt.else_if {
-                ElseBlock::Nothing => (),
-                ElseBlock::ElseIf(stmt) => {
-                    output += "else ";
-                    output += &to_c(&stmt, visiter);
-                }
-                ElseBlock::Else(block) => {
-                    output += "else ";
-                    output += &to_c(&block, visiter);
-                }
-            }
-            output
-        }
-        AstKind::Null => "NULL".to_string(),
-        AstKind::ArrayLit(elements) => {
-            let mut output = String::new();
-            output += "{";
-            for element in elements {
-                output += &to_c(&element, visiter);
-                output += ",";
-            }
-            output += "}";
-            output
-        }
-        AstKind::BinOpEq(path, op, val) => {
-            let mut output = String::new();
-            output += &to_c(path, visiter);
-            output += &format!(" {}= ", op.to_string());
-            output += &to_c(val, visiter);
-            output
-        }
-        AstKind::Assign(path, val) => {
-            let mut output = String::new();
-            output += &to_c(path, visiter);
-            output += " = ";
-            output += &to_c(val, visiter);
-            output
-        }
-        // AstKind::InlineBlock(block) => {
-        //     let mut output = String::new();
-        //     output += "{ return (";
-        //     output += &to_c(&block.expr, visiter);
-        //     output += "); }\n";
-        //     output
-        // }
-        AstKind::ExprRet(inner) => {
-            let mut output = String::new();
-            output += "=> ";
-            output += &to_c(inner, visiter);
-            output
-        }
-        AstKind::StructDecl(id, s) => {
-            let mut output = String::new();
-            let name = &visiter.get_id(&id).unwrap().name;
-            output += "typedef struct ";
-            output += name;
-            output += " {\n";
-            for field in &s.fields {
-                output += &to_c(&field, visiter);
-            }
-            output += "} ";
-            output += name;
-            output += ";\n";
-
-            output
-        }
-        AstKind::Field(field) => {
-            let mut output = String::new();
-            output += &var_type_to_c(&field.kind, visiter);
-            output += " ";
-            output += &field.name;
-            output += ";\n";
-
-            output
-        }
-        AstKind::Bool(b) => b.to_string(),
-        AstKind::StructLit(lit) => {
-            let mut output = String::new();
-
-            output += "(";
-            output += &var_type_to_c(&visiter.get_id(&lit.id).unwrap().kind, visiter);
-            output += ") ";
-
-            output += "{";
-            for (name, val) in &lit.fields {
-                output += ".";
-                output += &name;
-                output += " = ";
-                output += &to_c(val, visiter);
-                output += ",\n";
-            }
-            output += "};\n";
-
-            output
-        }
-        AstKind::Access(lhs, ident, deref) => {
-            if *deref {
-                to_c(lhs, visiter) + "->" + &ident
-            } else {
-                to_c(lhs, visiter) + "." + &ident
-            }
-        }
-    }
-}
-
-fn check_if_to_be(ast: &mut AstNode, visiter: &LexVisiter, kind: &mut Option<VarType>) {
-    match &mut ast.kind {
-        AstKind::Block(block) => {
-            for stmt in &mut block.stmts {
-                match &mut stmt.kind {
-                    AstKind::ExprRet(ret) => {
-                        let new = var_type_of(ret, visiter, kind.clone().unwrap_or(VarType::Void));
-                        if let Some(old) = kind {
-                            if !old.clone().loosy_eq(new.clone()) {
-                                visiter.error(format!("Expected if statement to have return type of {old} but this has a type of {new}"), "".to_string(), &ret.span)
-                            }
-                        }
-                        *kind = Some(new);
-                    }
-                    _ => {}
-                }
-                if kind.is_none() {
-                    *kind = Some(VarType::Void);
-                }
-            }
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn var_type_of(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) -> VarType {
-    match &mut ast.kind {
-        AstKind::Ident(id) => {
-            let path_id = visiter.get_id(&id);
-            match path_id {
-                Some(info) => info.kind.clone(),
-                None => todo!(),
-            }
-        }
-        AstKind::BinOp(lhs, op, rhs) => {
-            let mut var_type = var_type_of(lhs, visiter, expected_type.clone());
-            match &mut var_type {
-                VarType::Int | VarType::Float | VarType::String => {
-                    if var_type_of(rhs, visiter, expected_type.clone()) != var_type {
-                        visiter.error(
-                            format!(
-                                "Can not {} differing types of {} and {} without a cast",
-                                op.to_string(),
-                                var_type_of(lhs, visiter, expected_type.clone()),
-                                var_type_of(rhs, visiter, expected_type)
-                            ),
-                            "Add a 'xx' before the rhs to cast it".to_string(),
-                            &ast.span,
-                        );
-                        unreachable!()
-                    } else {
-                        if *op == BinOp::Eq {
-                            VarType::Bool
-                        } else {
-                            var_type
-                        }
-                    }
-                }
-                VarType::Ptr(inner) => {
-                    let inner_lhs = inner.as_mut().clone();
-                    let inner_rhs = match var_type_of(rhs, visiter, expected_type.clone()) {
-                        VarType::Ptr(inner) => inner.as_ref().clone(),
-                        _ => {
-                            visiter.error(
-                                format!("Expected pointer but found {rhs:?}"),
-                                "".to_string(),
-                                &rhs.span,
-                            );
-                            unreachable!()
-                        }
-                    };
-
-                    if !inner_lhs.loosy_eq(inner_rhs) {
-                        visiter.error(
-                            format!(
-                                "Can not {} differing types of {} and {} without a cast",
-                                op.to_string(),
-                                var_type_of(lhs, visiter, expected_type.clone()),
-                                var_type_of(rhs, visiter, expected_type)
-                            ),
-                            "Add a 'xx' before the rhs to cast it".to_string(),
-                            &ast.span,
-                        );
-                        unreachable!()
-                    } else {
-                        if *op == BinOp::Eq {
-                            VarType::Bool
-                        } else {
-                            var_type
-                        }
-                    }
-                }
-                _ => {
-                    visiter.error(
-                        format!("Operator overloading not implemented yet"),
-                        "".to_string(),
-                        &ast.span,
-                    );
-                    unreachable!()
-                }
-            }
-        }
-        AstKind::Block(block) => {
-            if block.expected_return == VarType::Unknown {
-                block.expected_return = expected_type;
-            }
-            block.expected_return.clone()
-        }
-        AstKind::Function(_, _) => VarType::Void,
-        AstKind::FunctionDecl(_, _) => VarType::Void,
-        AstKind::StructDecl(_, _) => VarType::Void,
-        AstKind::VarDecl(_, _, _) => VarType::Void,
-        AstKind::Return(val) => var_type_of(val, visiter, expected_type),
-        AstKind::Number(Number::Int(_)) => VarType::Int,
-        AstKind::Number(Number::Float(_)) => VarType::Float,
-        AstKind::String(_) => VarType::String,
-        AstKind::Parameter(var_type, _) => var_type.clone(),
-        AstKind::FunCall(path, _) => visiter
-            .get_id(&visiter.get_access_id(path))
-            .unwrap_or_else(|| {
-                visiter.error(
-                    format!("{} not defined", to_c(path, visiter)),
-                    "".to_string(),
-                    &ast.span,
-                );
-                unreachable!()
-            })
-            .kind
-            .clone(),
-        AstKind::Items(_) => todo!(),
-        AstKind::Reference(inner) => {
-            VarType::Ref(Box::new(var_type_of(inner, visiter, expected_type)))
-        }
-        AstKind::Dereference(inner) => match var_type_of(inner, visiter, expected_type) {
-            VarType::Ref(inner) => inner.as_ref().clone(),
-            VarType::Ptr(inner) => inner.as_ref().clone(),
-            t => {
-                visiter.error(
-                    format!("Trying to dereference non-pointer type {t}"),
-                    "".to_string(),
-                    &ast.span,
-                );
-                unreachable!()
-            }
-        },
-        AstKind::Pointer(inner) => {
-            VarType::Ptr(Box::new(var_type_of(inner, visiter, expected_type)))
-        }
-        AstKind::If(if_stmt) => {
-            let mut kind: Option<VarType> = None;
-            let mut current_if = if_stmt;
-            loop {
-                check_if_to_be(&mut current_if.block, visiter, &mut kind);
-                match &mut current_if.else_if {
-                    ElseBlock::Nothing => break,
-                    ElseBlock::ElseIf(stmt) => {
-                        if let AstKind::If(new_if) = &mut stmt.kind {
-                            current_if = new_if;
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                    ElseBlock::Else(block) => {
-                        check_if_to_be(block, visiter, &mut kind);
-                        break;
-                    }
-                }
-            }
-            kind.unwrap_or(VarType::Void)
-        }
-        AstKind::Null => VarType::Ptr(Box::new(VarType::Any)),
-        AstKind::ArrayLit(elements) => {
-            if elements.is_empty() {
-                return VarType::Array(Array {
-                    var_type: Box::new(VarType::Any),
-                    size: parse::ArraySize::FixedKnown(0),
-                });
-            }
-
-            let var_type = var_type_of(
-                elements.first_mut().unwrap(),
-                visiter,
-                expected_type.clone(),
-            );
-            for element in elements.iter_mut().skip(1) {
-                let element_type = var_type_of(element, visiter, expected_type.clone());
-                if !element_type.clone().loosy_eq(var_type.clone()) {
-                    visiter.error(
-                        format!(
-                            "Expected array of {var_type} but found element of type {element_type}"
-                        ),
-                        "".to_string(),
-                        &element.span,
-                    );
-                    unreachable!()
-                }
-            }
-            VarType::Array(Array {
-                var_type: Box::new(var_type),
-                size: parse::ArraySize::FixedKnown(elements.len() as i64),
-            })
-        }
-        AstKind::BinOpEq(_, _, _) => VarType::Void,
-        AstKind::Assign(_, _) => VarType::Void,
-        AstKind::ExprRet(inner) => var_type_of(inner, visiter, expected_type),
-        AstKind::Field(field) => field.kind.clone(),
-        AstKind::Bool(_) => VarType::Bool,
-        AstKind::StructLit(lit) => visiter.get_id(&lit.id).unwrap().kind.clone(),
-        AstKind::Access(_, _, _) => todo!(),
-    }
-}
-
-fn type_check(ast: &mut AstNode, visiter: &LexVisiter, expected_type: VarType) {
+fn apply_macros(ast: &mut AstNode, visiter: &mut LexVisiter) -> (Option<AstNode>, bool) {
     match &mut ast.kind {
         AstKind::Items(items) => {
-            for item in items {
-                type_check(item, visiter, VarType::Void);
-            }
-        }
-        AstKind::Function(_id, func) => match func.block.clone().as_mut() {
-            Some(b) => match &mut b.kind {
-                AstKind::Block(_) => type_check(b, visiter, func.ret_type.clone()),
-                _ => unreachable!(),
-            },
-            None => {}
-        },
-        AstKind::Block(block) => {
-            for stmt in &mut block.stmts {
-                type_check(stmt, visiter, block.expected_return.clone());
-            }
-        }
-        AstKind::If(if_stmt) => {
-            let conditional_type =
-                var_type_of(&mut if_stmt.conditional, visiter, expected_type.clone());
-            if conditional_type != VarType::Bool {
-                visiter.error(
-                    format!("Expected expression of type bool in if statement but found one of type {conditional_type}"),
-                    "".to_string(),
-                    &ast.span,
-                )
-            }
-            type_check(&mut if_stmt.block, visiter, expected_type.clone());
-            match &mut if_stmt.else_if {
-                ElseBlock::Nothing => {}
-                ElseBlock::ElseIf(stmt) => type_check(stmt, visiter, expected_type),
-                ElseBlock::Else(stmt) => type_check(stmt, visiter, expected_type),
-            }
-        }
-        AstKind::VarDecl(var_type, _id, val) => {
-            type_check(val, visiter, var_type.clone());
-            match var_type {
-                VarType::Unknown => {
-                    todo!()
-                }
-                t => {
-                    let expr_t = var_type_of(val, visiter, expected_type);
-                    if !t.clone().loosy_eq(expr_t.clone()) {
-                        visiter.error(
-                            format!(
-                                "Expected expression of type {t} but found one of type {expr_t}"
-                            ),
-                            "".to_string(),
-                            &ast.span,
-                        )
+            let mut new_nodes = vec![];
+            for (i, item) in items.iter_mut().enumerate() {
+                if let (Some(node), should_remove) = apply_macros(item, visiter) {
+                    if !should_remove {
+                        new_nodes.push((i, node));
                     }
                 }
             }
-        }
-        AstKind::Return(val) => {
-            let expr_t = var_type_of(val, visiter, expected_type.clone());
-            if expected_type != expr_t {
-                visiter.error(
-                    format!("Expected expression of type {expected_type} but found one of type {expr_t}"),
-                    "".to_string(),
-                    &ast.span,
-                )
+            for (i, item) in new_nodes {
+                items.insert(i, item);
             }
-        }
-        AstKind::FunCall(path, params) => {
-            let path_id = visiter.get_id(&visiter.get_access_id(path));
-            match path_id {
-                Some(info) => match &info.kind {
-                    VarType::Function(func) => {
-                        if params.len() != func.params.len() {
-                            visiter.error(
-                                format!(
-                                    "Expected {} but found {} parameters on function call {}",
-                                    func.params.len(),
-                                    params.len(),
-                                    &info.name
-                                ),
-                                "".to_string(),
-                                &ast.span,
-                            )
-                        }
-                        for (i, param) in params.iter_mut().enumerate() {
-                            let found = var_type_of(param, visiter, expected_type.clone());
-                            let expected = var_type_of(
-                                &mut func.params.clone()[i],
-                                visiter,
-                                expected_type.clone(),
-                            );
-                            if found != expected {
-                                visiter.error(
-                                    format!("Parameter {i} has expected type of {expected} but found {found}"),
-                                    "".to_string(),
-                                    &ast.span,
-                                )
-                            }
-                        }
-                    }
-                    _ => todo!(),
-                },
-                None => todo!(),
-            }
-        }
-        AstKind::BinOpEq(path, op, val) => {
-            let path_id = visiter.get_id(&visiter.get_access_id(path));
-            let var_type = match path_id {
-                Some(info) => info.kind.clone(),
-                None => todo!(),
-            };
-
-            match &var_type {
-                VarType::Int | VarType::Float | VarType::String => {
-                    if var_type_of(val, visiter, expected_type.clone()) != var_type {
-                        visiter.error(
-                            format!(
-                                "Can not {} differing types of {} and {} without a cast",
-                                op.to_string(),
-                                var_type,
-                                var_type_of(val, visiter, expected_type)
-                            ),
-                            "Add a 'xx' before the val to cast it".to_string(),
-                            &ast.span,
-                        );
-                        unreachable!()
-                    }
-                }
-                VarType::Ptr(inner) => {
-                    let inner_lhs = inner.as_ref().clone();
-                    let inner_val = match var_type_of(val, visiter, expected_type.clone()) {
-                        VarType::Ptr(inner) => inner.as_ref().clone(),
-                        _ => {
-                            visiter.error(
-                                format!("Expected pointer but found {val:?}"),
-                                "".to_string(),
-                                &val.span,
-                            );
-                            unreachable!()
-                        }
-                    };
-
-                    if !inner_lhs.loosy_eq(inner_val) {
-                        visiter.error(
-                            format!(
-                                "Can not {} differing types of {} and {} without a cast",
-                                op.to_string(),
-                                var_type,
-                                var_type_of(val, visiter, expected_type)
-                            ),
-                            "Add a 'xx' before the val to cast it".to_string(),
-                            &ast.span,
-                        );
-                        unreachable!()
-                    }
-                }
-                _ => {
-                    visiter.error(
-                        format!("Operator overloading not implemented yet"),
-                        "".to_string(),
-                        &ast.span,
-                    );
-                    unreachable!()
-                }
-            }
-        }
-        AstKind::Assign(path, val) => {
-            let path_id = visiter.get_id(&visiter.get_access_id(path));
-            let var_type = match path_id {
-                Some(info) => info.kind.clone(),
-                None => todo!(),
-            };
-            if !var_type
-                .clone()
-                .loosy_eq(var_type_of(val, visiter, expected_type.clone()))
-            {
-                visiter.error(
-                    format!(
-                        "Could not assign value of type {} to variable '{}' of type {}",
-                        var_type_of(val, visiter, expected_type),
-                        visiter.get_id(&visiter.get_access_id(path)).unwrap().name,
-                        var_type,
-                    ),
-                    "".to_string(),
-                    &ast.span,
-                )
-            }
-        }
-        AstKind::StructLit(lit) => {
-            let st = visiter.get_id(&lit.id).unwrap();
-            let mut all_fields = HashSet::new();
-            match &st.kind {
-                VarType::Struct(s) => {
-                    for field_ast in &s.fields {
-                        if let AstKind::Field(f) = &field_ast.kind {
-                            all_fields.insert(&f.name);
-                            if let Some(field) = lit.fields.get(&f.name) {
-                                let mut field_copy = field.clone();
-                                let found = var_type_of(&mut field_copy, visiter, f.kind.clone());
-                                if !found.clone().loosy_eq(f.kind.clone()) {
-                                    visiter.error(
-                                        format!(
-                                            "Field '{}' has expected type '{}' but found type '{}'",
-                                            f.name, f.kind, found
-                                        ),
-                                        "".to_string(),
-                                        &ast.span,
-                                    )
-                                }
-                            }
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                }
-                _ => unreachable!(),
-            }
-            for (name, _) in &lit.fields {
-                if all_fields.contains(name) {
-                    all_fields.remove(name);
-                } else {
-                    visiter.error(
-                        format!("Struct '{}' does not contain field '{}'", st.name, name),
-                        "".to_string(),
-                        &ast.span,
-                    )
-                }
-            }
-            for i in all_fields {
-                visiter.error(
-                    format!("Struct literal does not contain field '{i}'"),
-                    format!("Try adding \"{i}: {i}.default()"),
-                    &ast.span,
-                )
-            }
-        }
-        AstKind::Ident(_) => {}
-        AstKind::BinOp(lhs, _, rhs) => {
-            type_check(lhs, visiter, expected_type.clone());
-            type_check(rhs, visiter, expected_type);
-        }
-        AstKind::Field(_) => {}
-        AstKind::FunctionDecl(_, _) => {}
-        AstKind::StructDecl(_, _) => {}
-        AstKind::ExprRet(node) => type_check(node, visiter, expected_type),
-        AstKind::Number(_) => {}
-        AstKind::String(_) => {}
-        AstKind::Parameter(_, _) => {}
-        AstKind::Reference(node) => type_check(node, visiter, expected_type),
-        AstKind::Dereference(node) => type_check(node, visiter, expected_type),
-        AstKind::Pointer(node) => type_check(node, visiter, expected_type),
-        AstKind::ArrayLit(elements) => {
-            for i in elements {
-                type_check(i, visiter, expected_type.clone());
-            }
-        }
-        AstKind::Access(node, _, _) => type_check(node, visiter, expected_type),
-        AstKind::Null => {}
-        AstKind::Bool(_) => {}
-    }
-}
-
-fn const_check(ast: &mut AstNode, visiter: &mut LexVisiter) {
-    match &mut ast.kind {
-        AstKind::Items(items) => {
-            for item in items {
-                const_check(item, visiter);
-            }
+            (None, false)
         }
         AstKind::Function(_id, func) => {
             if let Some(b) = &mut func.block.clone() {
-                const_check(b.as_mut(), visiter)
+                apply_macros(b.as_mut(), visiter);
             }
+            (None, false)
         }
         AstKind::Block(block) => {
-            for stmt in &mut block.stmts {
-                const_check(stmt, visiter);
+            let mut new_nodes = vec![];
+            for (i, stmt) in block.stmts.iter_mut().enumerate() {
+                if let (Some(node), should_remove) = apply_macros(stmt, visiter) {
+                    if !should_remove {
+                        new_nodes.push((i, node));
+                    }
+                }
             }
+            for (i, stmt) in new_nodes {
+                block.stmts.insert(i, stmt);
+            }
+            (None, false)
         }
         AstKind::If(if_stmt) => {
-            const_check(&mut if_stmt.block, visiter);
+            apply_macros(&mut if_stmt.block, visiter);
             match &mut if_stmt.else_if {
-                ElseBlock::Nothing => {}
-                ElseBlock::ElseIf(stmt) => const_check(stmt, visiter),
-                ElseBlock::Else(stmt) => const_check(stmt, visiter),
+                ElseBlock::Nothing => (None, false),
+                ElseBlock::ElseIf(stmt) => apply_macros(stmt, visiter),
+                ElseBlock::Else(stmt) => apply_macros(stmt, visiter),
             }
         }
-        AstKind::VarDecl(_, _, val) => const_check(val, visiter),
-        AstKind::Return(val) => const_check(val, visiter),
-        AstKind::FunCall(_, params) => {
+        AstKind::VarDecl(_, _, val) => apply_macros(val, visiter),
+        AstKind::Return(val) => apply_macros(val, visiter),
+        AstKind::FunCall(func, params, is_macro) => {
+            if *is_macro {
+                if let AstKind::Ident(id) = &func.kind {
+                    let _info = visiter.get_id(id).unwrap();
+                    todo!()
+                } else {
+                    todo!()
+                }
+            }
             for param in params {
-                const_check(param, visiter);
+                apply_macros(param, visiter);
             }
+            (None, false)
         }
-        AstKind::BinOpEq(path, _, _) => {
-            let var = visiter.get_id(&visiter.get_access_id(path)).unwrap();
-            if var.constant {
-                visiter.error(
-                    format!("Could not assign value to constant variable '{}'", var.name),
-                    "Consider changing this to not be constant".to_string(),
-                    &ast.span,
-                )
-            }
+        AstKind::BinOpEq(lhs, _, rhs) => {
+            apply_macros(lhs, visiter);
+            apply_macros(rhs, visiter);
+            (None, false)
         }
-        AstKind::Assign(path, _) => {
-            let var = visiter.get_id(&visiter.get_access_id(path)).unwrap();
-            if var.constant {
-                visiter.error(
-                    format!("Could not assign value to constant variable '{}'", var.name),
-                    "Consider removing constant specifier from this".to_string(),
-                    &ast.span,
-                )
-            }
+        AstKind::Assign(lhs, rhs) => {
+            apply_macros(lhs, visiter);
+            apply_macros(rhs, visiter);
+            (None, false)
         }
-        _ => (),
+        _ => (None, false),
     }
 }
 
-fn semantic_analyse(ast: &mut AstNode, visiter: &mut LexVisiter) {
-    type_check(ast, visiter, VarType::Void);
-    const_check(ast, visiter);
+#[derive(Debug, PartialEq, Eq)]
+enum CompileMode {
+    CompileToBinary,
+    CompileToC,
+    Run,
+}
+
+fn term_error(msg: &str) -> ! {
+    println!(
+        "{}{}Error{}: {}{msg}{}",
+        error::TColor::Bold,
+        error::TColor::Red,
+        error::TColor::Reset,
+        error::TColor::Bold,
+        error::TColor::Reset,
+    );
+    std::process::exit(1);
+}
+
+fn expect_compile_mode() -> ! {
+    term_error("Expected a compile mode. eg. \"tau c input.tau\" or \"tau r input.tau\"")
+}
+
+fn print(msg: &str) {
+    print!("{msg}");
+    match io::stdout().flush() {
+        Ok(_) => print!(""),
+        Err(error) => println!("{}", error),
+    }
+}
+
+fn print_done() {
+    println!(
+        " {}{}Done!{}",
+        error::TColor::Green,
+        error::TColor::Bold,
+        error::TColor::Reset
+    );
+}
+
+fn compile_to_binary_from_c(c_code: String, output_file_path: &Path, output_file: Option<String>) {
+    let c_path = output_file_path.with_extension("cpp");
+    if let Err(e) = std::fs::write(c_path.clone(), c_code) {
+        term_error(&format!("{e}"))
+    }
+
+    let output = Command::new("bear")
+        .args([
+            "--",
+            "g++",
+            c_path.to_str().unwrap().to_string().as_str(),
+            "-o",
+            output_file.unwrap().as_str(),
+            "-w",
+            "-I/home/jove/Code/JovialEngine/include",
+            "-I/home/jove/Code/JovialEngine/include/extern",
+            "-L/home/jove/Code/JovialEngine/build",
+            "-ljovial_engine",
+            "-lGL",
+            "-lglfw",
+        ])
+        .output()
+        .expect("failed to execute process");
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    if !stderr.is_empty() {
+        println!("{}", stderr);
+        term_error("Could not compile code to c++!")
+    }
 }
 
 fn main() {
-    std::env::set_var("RUST_BACKTRACE", "1");
+    // std::env::set_var("RUST_BACKTRACE", "1");
 
     let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    let mut mode = {
+        match args
+            .get(i)
+            .unwrap_or_else(|| expect_compile_mode())
+            .as_str()
+        {
+            "c" => CompileMode::CompileToBinary,
+            "r" => CompileMode::Run,
+            _ => expect_compile_mode(),
+        }
+    };
+    i += 1;
+
+    let mut input_file = None;
+    let mut output_file = None;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-c" => {
+                if mode == CompileMode::CompileToBinary {
+                    mode = CompileMode::CompileToC;
+                }
+            }
+            "-o" => {
+                i += 1;
+                if let Some(path) = args.get(i) {
+                    if output_file.is_some() {
+                        term_error("Expected only one '-o'");
+                    }
+                    output_file = Some(path.clone());
+                } else {
+                    term_error("Expected output filepath after '-o'");
+                }
+            }
+            _ => {
+                if input_file.is_some() {
+                    term_error("Expected only one input file but found two. Tau does not work like c, 
+                               it uses modules so you do not need to provide a list of source files");
+                }
+                if !std::path::Path::new(&args[i]).exists() {
+                    term_error(&format!("Input file '{}' does not exist ", args[i]));
+                }
+                input_file = Some(args[i].clone());
+            }
+        }
+        i += 1;
+    }
+    if input_file.is_none() {
+        term_error("No input file provided");
+    }
+    let mut output_file_path = Path::new("");
+    if !matches!(mode, CompileMode::Run) {
+        if output_file.is_none() {
+            term_error("No output file provided");
+        } else {
+            output_file_path = Path::new(output_file.as_ref().unwrap());
+        }
+    }
+
     if args.len() < 2 {
         panic!("fatal error: no input files");
     }
 
-    let lex = lex::lex_file(args[1].clone());
-    let mut visiter = parse::LexVisiter::new(&lex);
+    print("Lexing...");
+    let lex = lex::lex_file(input_file.as_ref().unwrap().clone());
+    let mut visiter = parse::LexVisiter::new(lex);
+    print_done();
 
-    if let Ok(mut ast) = dbg!(parse::parse_items(&mut visiter)) {
-        semantic_analyse(&mut ast, &mut visiter);
+    print("Parsing...");
+    let mut ast = parse::parse_items(&mut visiter, input_file.unwrap()).unwrap();
+    print_done();
 
-        let mut output = String::new();
-        output += "#include <stdio.h>\n";
-        output += "#include <stdlib.h>\n";
-        output += "#include <stdbool.h>\n";
-        output += to_c(&ast, &visiter).as_str();
-        println!("{}", output);
-    } else {
-        todo!()
+    print("Applying macros...");
+    apply_macros(&mut ast, &mut visiter);
+    print_done();
+
+    print("Checking for errors...");
+    analysis::semantic_analyse(&mut ast, &mut visiter);
+    print_done();
+
+    match mode {
+        CompileMode::CompileToC => {
+            print("Generating C code...");
+            let c_code = cpp_gen::ast_to_c(&mut ast, &visiter);
+            print_done();
+            if let Err(e) = std::fs::write(output_file_path, c_code) {
+                term_error(&format!("{e}"))
+            }
+            // println!("{}", c_code);
+        }
+        CompileMode::Run => {
+            print("Generating C code...");
+            let c_code = cpp_gen::ast_to_c(&mut ast, &visiter);
+            print_done();
+            let output_file_path = Path::new("tau_temp");
+            let output_file = Some("tau_temp".to_string());
+            compile_to_binary_from_c(c_code, output_file_path, output_file.clone());
+
+            println!("---------------------");
+
+            let mut process = Command::new(format!("./{}", output_file.unwrap()))
+                .stderr(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("failed to execute process");
+
+            // Capture the stdout
+            let stdout = process.stdout.take().expect("failed to capture stdout");
+            let stdout_reader = BufReader::new(stdout);
+            let stdout_handle = thread::spawn(move || {
+                for line in stdout_reader.lines() {
+                    match line {
+                        Ok(line) => println!("{}", line),
+                        Err(err) => eprintln!("Error reading stdout: {}", err),
+                    }
+                }
+            });
+
+            // Capture the stderr
+            let stderr = process.stderr.take().expect("failed to capture stderr");
+            let stderr_reader = BufReader::new(stderr);
+            let stderr_handle = thread::spawn(move || {
+                for line in stderr_reader.lines() {
+                    match line {
+                        Ok(line) => eprintln!("{}", line),
+                        Err(err) => eprintln!("Error reading stderr: {}", err),
+                    }
+                }
+            });
+
+            // Wait for the process to complete
+            // let status = process.wait().expect("process failed to run");
+            // println!("Process exited with status: {}", status);
+
+            // Wait for the threads to complete
+            stdout_handle.join().expect("failed to join stdout thread");
+            stderr_handle.join().expect("failed to join stderr thread");
+        }
+        CompileMode::CompileToBinary => {
+            print("Generating C code...");
+            let c_code = cpp_gen::ast_to_c(&mut ast, &visiter);
+            print_done();
+            compile_to_binary_from_c(c_code, output_file_path, output_file.clone())
+        }
     }
 }

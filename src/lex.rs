@@ -2,7 +2,7 @@ use crate::{
     error::Log,
     pos::{Pos, Span},
 };
-use std::fs;
+use std::{collections::VecDeque, fs};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Keyword {
@@ -20,6 +20,7 @@ pub enum Keyword {
     Null,
     True,
     False,
+    Use,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -41,6 +42,7 @@ impl TryFrom<&str> for Keyword {
             "null" => Ok(Keyword::Null),
             "true" => Ok(Keyword::True),
             "false" => Ok(Keyword::False),
+            "use" => Ok(Keyword::Use),
             _ => Err(false),
         }
     }
@@ -66,6 +68,7 @@ pub enum TokenKind {
     LogOr,
     Comma,
     Dot,
+    Hash,
 }
 
 impl TokenKind {
@@ -174,6 +177,7 @@ impl TokenKind {
                     Keyword::Struct => 12,
                     Keyword::True => 13,
                     Keyword::False => 14,
+                    Keyword::Use => 15,
                 },
             ),
             TokenKind::Semi => (9, 0),
@@ -185,6 +189,7 @@ impl TokenKind {
             TokenKind::Colon => (15, 0),
             TokenKind::FatArrow => (16, 0),
             TokenKind::Dot => (17, 0),
+            TokenKind::Hash => (18, 0),
         }
     }
 
@@ -384,7 +389,6 @@ fn lex_number(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                         format!("Remove second '.'"),
                         &Span::single(pos.clone()),
                     );
-                    return None;
                 } else {
                     is_float = true
                 }
@@ -472,7 +476,6 @@ fn lex_op(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                         format!("Unknown character"),
                         &Span::single(start_pos),
                     );
-                    None
                 }
             }
         }
@@ -482,7 +485,6 @@ fn lex_op(lex: &Lex, pos: &mut Pos) -> Option<Token> {
             format!("Unknown character"),
             &Span::single(start_pos),
         );
-        None
     }
 }
 
@@ -542,6 +544,11 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                     pos.advance(&lex.file);
                     Some(Token::new(TokenKind::Comma, span))
                 }
+                '#' => {
+                    let span = Span::single(*pos);
+                    pos.advance(&lex.file);
+                    Some(Token::new(TokenKind::Hash, span))
+                }
                 '=' => {
                     let span = Span::single(*pos);
                     pos.advance(&lex.file);
@@ -598,7 +605,6 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                         format!("remove this"),
                         &Span::single(*pos),
                     );
-                    None
                 }
             }
         }
@@ -608,22 +614,22 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
 
 #[derive(Debug)]
 pub struct Lex {
-    pub tokens: Vec<Token>,
+    pub tokens: VecDeque<Token>,
     pub file: String,
     pub path: String,
 }
 
 pub fn lex_file(path: String) -> Lex {
     let mut lex = Lex {
-        file: fs::read_to_string(&path).unwrap(),
+        file: fs::read_to_string(&path).expect(&format!("Could not read file '{path}'")),
         path,
-        tokens: Vec::new(),
+        tokens: VecDeque::new(),
     };
     let mut current_pos = Pos::start();
 
     loop {
         if let Some(tok) = next_token(&lex, &mut current_pos) {
-            lex.tokens.push(tok);
+            lex.tokens.push_back(tok);
         } else {
             break;
         }

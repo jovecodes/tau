@@ -1,1 +1,1 @@
-cargo run -- ./input.tau
+cargo run -- r ./input.tau

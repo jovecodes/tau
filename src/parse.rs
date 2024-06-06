@@ -1,11 +1,11 @@
-use crate::lex::{BinOp, Delimiter, Keyword, Token, TokenKind};
+use crate::lex::{BinOp, Delimiter, Keyword, Lex, Token, TokenKind};
 use crate::pos::{Pos, Span};
 
-use crate::var_type_of;
+use crate::analysis::var_type_of;
 use crate::{error::Log, lex::TokenKindName};
 use core::panic;
 use std::fmt::Display;
-use std::{collections::HashMap, iter::Peekable, rc::Rc, slice::Iter};
+use std::{collections::HashMap, rc::Rc};
 
 type ScopeID = u64;
 
@@ -19,7 +19,7 @@ pub struct Scope {
 
 #[derive(Debug)]
 pub struct ScopeTable {
-    items: HashMap<ScopeID, Scope>,
+    pub items: HashMap<ScopeID, Scope>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -68,7 +68,7 @@ pub enum VarType {
 impl Display for VarType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VarType::Function(_) => todo!(),
+            VarType::Function(_) => write!(f, "SomeFunction"),
             VarType::Struct(s) => write!(f, "{}", s.name),
             VarType::Ref(inner) => write!(f, "&{inner}"),
             VarType::Ptr(inner) => write!(f, "@{inner}"),
@@ -115,7 +115,7 @@ pub struct SymbolInfo {
 
 #[derive(Debug)]
 pub struct SymbolTable {
-    items: HashMap<ID, SymbolInfo>,
+    pub items: HashMap<ID, SymbolInfo>,
 }
 
 fn as_result<T>(o: Option<T>) -> Result<T, ()> {
@@ -126,23 +126,21 @@ fn as_result<T>(o: Option<T>) -> Result<T, ()> {
 }
 
 #[derive(Debug)]
-pub struct LexVisiter<'a> {
-    pub path: &'a str,
-    pub file: &'a str,
-    pub tokens: Peekable<Iter<'a, Token>>,
-
+pub struct LexVisiter {
+    pub lexs: Vec<Lex>,
+    pub current_lex: usize,
     pub symbols: SymbolTable,
     pub scopes: ScopeTable,
     pub current_scope: ScopeID,
     pub global_scope: ScopeID,
+    pub modules: HashMap<String, ScopeID>,
 }
 
-impl<'a> LexVisiter<'a> {
-    pub fn new(lex: &'a crate::lex::Lex) -> LexVisiter<'a> {
+impl LexVisiter {
+    pub fn new(lex: crate::lex::Lex) -> LexVisiter {
         let mut vister = LexVisiter {
-            path: &lex.path,
-            file: &lex.file,
-            tokens: lex.tokens.iter().peekable(),
+            lexs: vec![lex],
+            current_lex: 0,
             symbols: SymbolTable {
                 items: HashMap::new(),
             },
@@ -151,10 +149,11 @@ impl<'a> LexVisiter<'a> {
             },
             current_scope: 0,
             global_scope: 0,
+            modules: HashMap::new(),
         };
 
         vister.scopes.items.insert(
-            vister.current_scope,
+            vister.global_scope,
             Scope {
                 id: vister.current_scope,
                 parent: None,
@@ -164,10 +163,63 @@ impl<'a> LexVisiter<'a> {
         );
 
         vister
+            .push_id(SymbolInfo {
+                kind: VarType::Function(Rc::new(Function {
+                    params: vec![AstNode::new(
+                        AstKind::Parameter(VarType::String, ID::null()),
+                        Span::null(),
+                    )],
+                    ret_type: VarType::Void,
+                    block: None,
+                })),
+                name: "use".to_string(),
+                constant: true,
+            })
+            .unwrap();
+
+        vister
+            .push_id(SymbolInfo {
+                kind: VarType::Function(Rc::new(Function {
+                    params: vec![AstNode::new(
+                        AstKind::Parameter(VarType::String, ID::null()),
+                        Span::null(),
+                    )],
+                    ret_type: VarType::Void,
+                    block: None,
+                })),
+                name: "print".to_string(),
+                constant: true,
+            })
+            .unwrap();
+
+        vister
+            .push_id(SymbolInfo {
+                kind: VarType::Function(Rc::new(Function {
+                    params: vec![AstNode::new(
+                        AstKind::Parameter(VarType::String, ID::null()),
+                        Span::null(),
+                    )],
+                    ret_type: VarType::Void,
+                    block: None,
+                })),
+                name: "println".to_string(),
+                constant: true,
+            })
+            .unwrap();
+
+        vister
     }
 
-    fn expect(&mut self, valid: impl Fn(&TokenKind) -> bool) -> Result<&Token, Option<&Token>> {
-        match self.tokens.next() {
+    fn next(&mut self) -> Option<Token> {
+        self.lexs[self.current_lex].tokens.pop_front()
+    }
+
+    fn peek(&self) -> Option<&Token> {
+        self.lexs[self.current_lex].tokens.get(0)
+    }
+
+    fn expect(&mut self, valid: impl Fn(&TokenKind) -> bool) -> Result<Token, Option<Token>> {
+        match self.next() {
             Some(t) => {
                 if valid(&t.kind) {
                     Ok(t)
@@ -220,7 +272,7 @@ impl<'a> LexVisiter<'a> {
         if let Some(parent) = self.scopes.items[&self.current_scope].parent {
             self.current_scope = parent;
         } else {
-            let span = self.tokens.peek().map(|x| x.span).unwrap_or(Span::null());
+            let span = self.peek().map(|x| x.span).unwrap_or(Span::null());
             self.error(
                 "Compiler Error: trying to call pop_scope on global_scope scope".to_string(),
                 "Here".to_string(),
@@ -283,19 +335,18 @@ impl<'a> LexVisiter<'a> {
         }
     }
 
-    fn expect_auto_err(&mut self, kind: (u32, i64)) -> &Token {
+    fn expect_auto_err(&mut self, kind: (u32, i64)) -> Token {
         {
             let as_int = {
-                self.tokens
-                    .peek()
+                self.peek()
                     .map(|t| t.kind.as_int())
                     .unwrap_or((u32::MAX, 0))
             };
             if as_int == kind {
-                return self.tokens.next().unwrap();
+                return self.next().unwrap();
             }
         }
-        let res = self.tokens.next();
+        let res = self.next();
         if let Some(v) = res {
             let s = v.span.clone();
             let name = v.kind.as_int().0.token_kind_name();
@@ -308,7 +359,6 @@ impl<'a> LexVisiter<'a> {
                 format!(""),
                 &s,
             );
-            unreachable!()
         } else {
             let s = Span::default();
             self.error(
@@ -316,26 +366,7 @@ impl<'a> LexVisiter<'a> {
                 format!(""),
                 &s,
             );
-            unreachable!()
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Path {
-    pub segments: Vec<PathSegment>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathSegment {
-    // ident: String,
-    pub id: ID,
-    // args: Option<P<GenericArgs>>,
-}
-
-impl PathSegment {
-    fn new(id: ID) -> Self {
-        Self { id }
     }
 }
 
@@ -396,6 +427,7 @@ pub struct IfStatement {
     pub conditional: Box<AstNode>,
     pub block: Box<AstNode>,
     pub else_if: ElseBlock,
+    pub is_macro: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,7 +447,7 @@ pub struct Struct {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLit {
     pub id: ID,
-    pub fields: HashMap<String, AstNode>,
+    pub fields: Vec<(String, AstNode, Span)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,7 +467,7 @@ pub enum AstKind {
     Number(Number),
     String(String),
     Parameter(VarType, ID),
-    FunCall(Box<AstNode>, Vec<AstNode>),
+    FunCall(Box<AstNode>, Vec<AstNode>, bool),
     Items(Vec<AstNode>),
     Reference(Box<AstNode>),
     Dereference(Box<AstNode>),
@@ -469,40 +501,40 @@ fn combine_expr(lhs: AstNode, op: &Token, rhs: AstNode) -> AstNode {
     AstNode::new(AstKind::BinOp(Box::new(lhs), op_val, Box::new(rhs)), span)
 }
 
-fn parse_expression_1<'a>(
-    lex: &'a mut LexVisiter,
+fn parse_expression_1(
+    lex: &mut LexVisiter,
     mut lhs: AstNode,
     min_prec: i32,
 ) -> Result<AstNode, ()> {
-    let mut lookahead = match lex.tokens.peek() {
-        Some(token) => *token,
+    let mut lookahead = match lex.peek() {
+        Some(token) => token.clone(),
         None => return Ok(lhs),
     };
 
     while lookahead.kind.precedence() >= min_prec {
         let op = lookahead;
-        lex.tokens.next();
+        lex.next();
         let mut rhs = parse_primary(lex).unwrap();
-        lookahead = match lex.tokens.peek() {
-            Some(token) => token,
+        lookahead = match lex.peek() {
+            Some(token) => token.clone(),
             None => {
-                lhs = combine_expr(lhs, op, rhs);
+                lhs = combine_expr(lhs, &op, rhs);
                 break;
             }
         };
         while lookahead.kind.precedence() > op.kind.precedence() {
             rhs = parse_expression_1(lex, rhs, op.kind.precedence() + 1).unwrap();
-            lookahead = match lex.tokens.peek() {
-                Some(token) => token,
-                None => return Ok(combine_expr(lhs, op, rhs)),
+            lookahead = match lex.peek() {
+                Some(token) => token.clone(),
+                None => return Ok(combine_expr(lhs, &op, rhs)),
             };
         }
-        lhs = combine_expr(lhs, op, rhs);
+        lhs = combine_expr(lhs, &op, rhs);
     }
     Ok(lhs)
 }
 
-fn parse_fn_call<'a>(lex: &'a mut LexVisiter, path: AstNode) -> Result<AstNode, ()> {
+fn parse_fn_call(lex: &mut LexVisiter, path: AstNode, is_macro: bool) -> Result<AstNode, ()> {
     let start_pos = lex
         .expect(|x| matches!(x, TokenKind::OpenDelim(Delimiter::Paren)))
         .unwrap()
@@ -512,7 +544,7 @@ fn parse_fn_call<'a>(lex: &'a mut LexVisiter, path: AstNode) -> Result<AstNode, 
     let mut params = Vec::new();
 
     loop {
-        match lex.tokens.peek() {
+        match lex.peek() {
             Some(t) => match t.kind {
                 TokenKind::CloseDelim(Delimiter::Paren) => break,
                 _ => params.push(parse_expression(lex).unwrap()),
@@ -532,21 +564,21 @@ fn parse_fn_call<'a>(lex: &'a mut LexVisiter, path: AstNode) -> Result<AstNode, 
         .from;
 
     Ok(AstNode::new(
-        AstKind::FunCall(Box::new(path), params),
+        AstKind::FunCall(Box::new(path), params, is_macro),
         Span::new(start_pos, end_pos),
     ))
 }
 
-fn parse_struct_lit<'a>(
-    lex: &'a mut LexVisiter,
+fn parse_struct_lit(
+    lex: &mut LexVisiter,
     mut struct_type: AstNode,
     start_pos: Pos,
 ) -> Result<AstNode, ()> {
     lex.expect_auto_err(TokenKind::OpenDelim(Delimiter::Paren).as_int());
-    let mut fields = HashMap::new();
+    let mut fields = Vec::new();
     loop {
         if matches!(
-            lex.tokens.peek().unwrap().kind,
+            lex.peek().unwrap().kind,
             TokenKind::CloseDelim(Delimiter::Paren)
         ) {
             break;
@@ -561,24 +593,16 @@ fn parse_struct_lit<'a>(
 
         lex.expect_auto_err(TokenKind::Colon.as_int());
         let value = parse_expression(lex).unwrap();
-        if matches!(lex.tokens.peek().unwrap().kind, TokenKind::Comma) {
-            lex.tokens.next();
+        if matches!(lex.peek().unwrap().kind, TokenKind::Comma) {
+            lex.next();
         }
 
-        if fields.contains_key(&name) {
-            lex.error(
-                format!("Struct literal already has field '{name}' filled"),
-                "".to_string(),
-                &span,
-            )
-        }
-        fields.insert(name, value);
+        fields.push((name, value, span));
     }
     let to_pos = lex
         .expect_auto_err(TokenKind::CloseDelim(Delimiter::Paren).as_int())
         .span
         .to;
-    dbg!(lex.tokens.peek());
     Ok(AstNode::new(
         AstKind::StructLit(StructLit {
             id: lex.get_access_id(&mut struct_type),
@@ -588,37 +612,61 @@ fn parse_struct_lit<'a>(
     ))
 }
 
-fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
-    match lex.tokens.peek().map(|x| &x.kind) {
+fn parse_primary(lex: &mut LexVisiter) -> Result<AstNode, ()> {
+    let is_macro = matches!(lex.peek().map(|x| &x.kind), Some(TokenKind::Hash));
+    if is_macro {
+        lex.next();
+    }
+    parse_primary_with_is_macro(lex, is_macro)
+}
+
+fn parse_primary_with_is_macro(lex: &mut LexVisiter, is_macro: bool) -> Result<AstNode, ()> {
+    let kind = lex.peek().map(|x| x.kind.clone());
+    match kind {
         Some(TokenKind::Ident(ident)) => {
-            let span = lex.tokens.next().unwrap().span.clone();
+            let span = lex.next().unwrap().span.clone();
             let mut path = parse_access(
                 lex,
                 AstNode::new(
-                    AstKind::Ident(lex.find_id(ident).unwrap_or_else(|| {
+                    AstKind::Ident(lex.find_id(&ident).unwrap_or_else(|| {
                         lex.error(
                             format!("Use of undefined symbol '{ident}'"),
                             "".to_string(),
                             &span,
                         );
-                        unreachable!()
                     })),
                     span,
                 ),
             )
             .unwrap();
 
-            match lex.tokens.peek().map(|x| &x.kind) {
+            match lex.peek().map(|x| &x.kind) {
                 Some(TokenKind::OpenDelim(Delimiter::Paren)) => {
                     match lex.get_id(&lex.get_access_id(&mut path)) {
                         Some(info) => {
                             if matches!(info.kind, VarType::Struct(_)) {
+                                if is_macro {
+                                    let span = lex.peek().unwrap().span;
+                                    lex.error(
+                                        format!("Undefined use of macro '{ident}'"),
+                                        "".to_string(),
+                                        &span,
+                                    )
+                                }
                                 return parse_struct_lit(lex, path, span.from);
                             } else if matches!(info.kind, VarType::Function(_)) {
-                                return parse_fn_call(lex, path);
+                                return parse_fn_call(lex, path, is_macro);
+                            } else {
+                                lex.error(
+                                    format!(
+                                        "Unexpected function call like invocation of '{ident}'"
+                                    ),
+                                    "".to_string(),
+                                    &span,
+                                );
                             }
                         }
-                        None => return parse_fn_call(lex, path),
+                        None => return parse_fn_call(lex, path, is_macro),
                     }
                 }
                 _ => {
@@ -631,12 +679,12 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
         }
         _ => {}
     };
-    match lex.tokens.next() {
+    match lex.next() {
         Some(tok) => match &tok.kind {
             TokenKind::Keyword(Keyword::Null) => Ok(AstNode::new(AstKind::Null, tok.span)),
             TokenKind::Keyword(Keyword::True) => Ok(AstNode::new(AstKind::Bool(true), tok.span)),
             TokenKind::Keyword(Keyword::False) => Ok(AstNode::new(AstKind::Bool(false), tok.span)),
-            TokenKind::Keyword(Keyword::If) => parse_if_expr(lex, tok.span.from),
+            TokenKind::Keyword(Keyword::If) => parse_if_expr(lex, is_macro, tok.span.from),
             TokenKind::Int(i) => Ok(AstNode::new(AstKind::Number(Number::Int(*i)), tok.span)),
             TokenKind::Float(f) => Ok(AstNode::new(AstKind::Number(Number::Float(*f)), tok.span)),
             TokenKind::String(s) => Ok(AstNode::new(AstKind::String(s.clone()), tok.span)),
@@ -650,7 +698,6 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     "Move this to a seperate statement".to_string(),
                     &tok.span,
                 );
-                unreachable!()
             }
             TokenKind::OpenDelim(Delimiter::Paren) => {
                 let res = parse_expression(lex);
@@ -673,14 +720,14 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                 let end_pos;
                 loop {
                     elements.push(parse_expression(lex).unwrap());
-                    if matches!(lex.tokens.peek().unwrap().kind, TokenKind::Comma) {
-                        lex.tokens.next();
+                    if matches!(lex.peek().unwrap().kind, TokenKind::Comma) {
+                        lex.next();
                     }
                     if matches!(
-                        lex.tokens.peek().unwrap().kind,
+                        lex.peek().unwrap().kind,
                         TokenKind::CloseDelim(Delimiter::Bracket)
                     ) {
-                        end_pos = lex.tokens.next().unwrap().span.to;
+                        end_pos = lex.next().unwrap().span.to;
                         break;
                     }
                 }
@@ -708,7 +755,6 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     "This is a bug in the compiler not your code".to_string(),
                     &tok.span,
                 );
-                Err(())
             }
         },
         None => {
@@ -717,24 +763,23 @@ fn parse_primary<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                 "This is an invalid end of a program".to_string(),
                 &Span::default(),
             );
-            Err(())
         }
     }
 }
 
-fn parse_expression<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
+fn parse_expression(lex: &mut LexVisiter) -> Result<AstNode, ()> {
     let primary = parse_primary(lex).unwrap();
     parse_expression_1(lex, primary, 0)
 }
 
-fn parse_var_decl<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
-    let from_pos = lex.tokens.peek().unwrap().span.from;
+fn parse_var_decl(lex: &mut LexVisiter) -> Result<AstNode, ()> {
+    let from_pos = lex.peek().unwrap().span.from;
     let kind = parse_type(lex).unwrap();
     parse_var_decl_of_type(lex, kind, from_pos)
 }
 
-fn parse_var_decl_of_type<'a>(
-    lex: &'a mut LexVisiter,
+fn parse_var_decl_of_type(
+    lex: &mut LexVisiter,
     kind: VarType,
     from_pos: Pos,
 ) -> Result<AstNode, ()> {
@@ -744,7 +789,7 @@ fn parse_var_decl_of_type<'a>(
         _ => panic!("this should be a ident"),
     };
 
-    let constant = match lex.tokens.next() {
+    let constant = match lex.next() {
         Some(t) => match &t.kind {
             TokenKind::Colon => true,
             TokenKind::Assign => false,
@@ -754,7 +799,6 @@ fn parse_var_decl_of_type<'a>(
                     "".to_string(),
                     &t.span,
                 );
-                unreachable!()
             }
         },
         None => {
@@ -763,11 +807,10 @@ fn parse_var_decl_of_type<'a>(
                 "".to_string(),
                 &Span::null(),
             );
-            unreachable!()
         }
     };
 
-    let no_semi_needed = match lex.tokens.peek().map(|x| &x.kind) {
+    let no_semi_needed = match lex.peek().map(|x| &x.kind) {
         Some(TokenKind::Keyword(Keyword::If)) => true,
         Some(TokenKind::OpenDelim(Delimiter::Brace)) => true,
         _ => false,
@@ -792,7 +835,6 @@ fn parse_var_decl_of_type<'a>(
             format!("Change this variables name"),
             &span,
         );
-        Err(())
     } else {
         Ok(AstNode::new(
             AstKind::VarDecl(kind, id.unwrap(), Box::new(value)),
@@ -801,18 +843,17 @@ fn parse_var_decl_of_type<'a>(
     }
 }
 
-fn parse_fn_parameter<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
-    let start_pos = lex.tokens.peek().unwrap().span.from;
+fn parse_fn_parameter(lex: &mut LexVisiter) -> Result<AstNode, ()> {
+    let start_pos = lex.peek().unwrap().span.from;
     let paren_type = match parse_type(lex) {
         Ok(t) => t,
         Err(_) => {
-            let span = Span::new(start_pos, lex.tokens.peek().unwrap().span.to);
+            let span = Span::new(start_pos, lex.peek().unwrap().span.to);
             lex.error(
                 "Unknown type of parameter".to_string(),
                 "".to_string(),
                 &span,
             );
-            unreachable!()
         }
     };
     let span;
@@ -837,8 +878,8 @@ fn parse_fn_parameter<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     Ok(AstNode::new(AstKind::Parameter(paren_type, id), span))
 }
 
-fn parse_type_inner<'a>(lex: &'a mut LexVisiter) -> Result<VarType, ()> {
-    match lex.tokens.peek() {
+fn parse_type_inner(lex: &mut LexVisiter) -> Result<VarType, ()> {
+    match lex.peek() {
         Some(t) => match &t.kind {
             TokenKind::Ident(name) => Ok(VarType::Struct(
                 match &lex
@@ -863,36 +904,38 @@ fn parse_type_inner<'a>(lex: &'a mut LexVisiter) -> Result<VarType, ()> {
                 "".to_owned(),
                 &Span::null(),
             );
-            unreachable!()
         }
     }
 }
 
-fn parse_type<'a>(lex: &'a mut LexVisiter) -> Result<VarType, ()> {
-    let mut var_type = parse_type_inner(lex).unwrap();
-    lex.tokens.next();
+fn parse_type(lex: &mut LexVisiter) -> Result<VarType, ()> {
+    let span = lex.peek().unwrap().span;
+    let mut var_type = parse_type_inner(lex).unwrap_or_else(|_| {
+        lex.error("Could not parse type".to_string(), "".to_string(), &span);
+    });
+    lex.next();
     loop {
-        match lex.tokens.peek().map(|x| &x.kind) {
+        match lex.peek().map(|x| &x.kind) {
             Some(k) => match k {
                 TokenKind::BinOp(BinOp::BitAnd) => {
-                    lex.tokens.next();
+                    lex.next();
                     var_type = VarType::Ref(Box::new(var_type));
                 }
                 TokenKind::BinOp(BinOp::Ptr) => {
-                    lex.tokens.next();
+                    lex.next();
                     var_type = VarType::Ptr(Box::new(var_type));
                 }
                 TokenKind::BinOp(BinOp::Mul) => {
-                    lex.tokens.next();
+                    lex.next();
                     var_type = VarType::Deref(Box::new(var_type));
                 }
                 TokenKind::OpenDelim(Delimiter::Bracket) => {
-                    lex.tokens.next();
-                    let size = match &lex.tokens.peek() {
+                    lex.next();
+                    let size = match &lex.peek() {
                         Some(t) => match &t.kind {
                             TokenKind::CloseDelim(_) => ArraySize::Unknown,
                             TokenKind::Keyword(Keyword::Dynamic) => {
-                                lex.tokens.next();
+                                lex.next();
                                 ArraySize::Dynamic
                             }
                             _ => ArraySize::Fixed(Box::new(parse_expression(lex).unwrap())),
@@ -903,7 +946,6 @@ fn parse_type<'a>(lex: &'a mut LexVisiter) -> Result<VarType, ()> {
                                 "".to_string(),
                                 &Span::null(),
                             );
-                            unreachable!()
                         }
                     };
                     var_type = VarType::Array(Array {
@@ -922,12 +964,8 @@ fn parse_type<'a>(lex: &'a mut LexVisiter) -> Result<VarType, ()> {
     Ok(var_type)
 }
 
-fn parse_block<'a>(
-    lex: &'a mut LexVisiter,
-    new_scope: bool,
-    ret_type: VarType,
-) -> Result<AstNode, ()> {
-    match lex.tokens.peek().unwrap().kind {
+fn parse_block(lex: &mut LexVisiter, new_scope: bool, ret_type: VarType) -> Result<AstNode, ()> {
+    match lex.peek().unwrap().kind {
         TokenKind::FatArrow => {
             return parse_inline_block(lex, ret_type);
         }
@@ -949,7 +987,7 @@ fn parse_block<'a>(
         .from;
 
     while !matches!(
-        lex.tokens.peek().map(|x| &x.kind),
+        lex.peek().map(|x| &x.kind),
         Some(TokenKind::CloseDelim(Delimiter::Brace))
     ) {
         stmts.push(parse_stmt(lex).unwrap())
@@ -974,7 +1012,7 @@ fn parse_block<'a>(
     ))
 }
 
-fn parse_inline_block<'a>(lex: &'a mut LexVisiter, ret_type: VarType) -> Result<AstNode, ()> {
+fn parse_inline_block(lex: &mut LexVisiter, ret_type: VarType) -> Result<AstNode, ()> {
     let scope = lex.push_scope();
     let expr = parse_expression(lex).unwrap();
     let semi = lex.expect_auto_err(TokenKind::Semi.as_int());
@@ -993,7 +1031,7 @@ fn parse_inline_block<'a>(lex: &'a mut LexVisiter, ret_type: VarType) -> Result<
     Ok(block)
 }
 
-fn parse_fn<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
+fn parse_fn(lex: &mut LexVisiter) -> Result<AstNode, ()> {
     let fn_start_pos = lex
         .expect_auto_err(TokenKind::Keyword(Keyword::Function).as_int())
         .span
@@ -1021,14 +1059,14 @@ fn parse_fn<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
         .unwrap();
 
     while !matches!(
-        lex.tokens.peek().map(|x| &x.kind),
+        lex.peek().map(|x| &x.kind),
         Some(TokenKind::CloseDelim(Delimiter::Paren))
     ) {
         parameters.push(parse_fn_parameter(lex).unwrap());
-        let (kind, span) = lex.tokens.peek().map(|x| (&x.kind, x.span)).unwrap();
+        let (kind, span) = lex.peek().map(|x| (&x.kind, x.span)).unwrap();
         match kind {
             TokenKind::Comma => {
-                lex.tokens.next();
+                lex.next();
             }
             TokenKind::CloseDelim(Delimiter::Paren) => break,
             t => lex.error(
@@ -1042,16 +1080,14 @@ fn parse_fn<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     lex.expect(|x| matches!(x, TokenKind::CloseDelim(Delimiter::Paren)))
         .unwrap();
 
-    let kind = {
-        let t = parse_type(lex);
-        if t.is_err() {
-            VarType::Void
-        } else {
-            t.unwrap()
-        }
+    let kind = match lex.peek().unwrap().kind {
+        TokenKind::Semi => VarType::Void,
+        TokenKind::OpenDelim(Delimiter::Brace) => VarType::Void,
+        TokenKind::FatArrow => VarType::Void,
+        _ => parse_type(lex).unwrap(),
     };
 
-    match lex.tokens.peek().map(|x| &x.kind) {
+    match lex.peek().map(|x| x.kind.clone()) {
         Some(TokenKind::OpenDelim(Delimiter::Brace)) | Some(TokenKind::FatArrow) => {
             let block = parse_block(lex, false, kind.clone()).unwrap();
             let span = Span::new(fn_start_pos, block.span.to);
@@ -1074,13 +1110,12 @@ fn parse_fn<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     format!("consider using a different name"),
                     &span,
                 );
-                Err(())
             } else {
                 Ok(AstNode::new(AstKind::Function(id.unwrap(), func), span))
             }
         }
         Some(TokenKind::Semi) => {
-            let span = lex.tokens.next().unwrap().span;
+            let span = lex.next().unwrap().span;
             let span = Span::new(fn_start_pos, span.to);
             let func = Rc::new(Function {
                 params: parameters,
@@ -1101,39 +1136,50 @@ fn parse_fn<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                 String::new(),
                 &Span::null(),
             );
-            unreachable!()
         }
         t => {
-            let span = lex.tokens.next().unwrap().span;
+            let span = lex.next().unwrap().span;
             lex.error(
                 format!("expected function declaration but found {t:?}"),
                 String::new(),
                 &span,
             );
-            unreachable!()
         }
     }
 }
-fn parse_if_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
+
+fn parse_if_stmt(lex: &mut LexVisiter) -> Result<AstNode, ()> {
+    let is_macro = matches!(lex.peek().map(|x| &x.kind), Some(TokenKind::Hash));
+    if is_macro {
+        lex.next();
+    }
+    parse_if_stmt_with_is_macro(lex, is_macro)
+}
+
+fn parse_if_stmt_with_is_macro(lex: &mut LexVisiter, is_macro: bool) -> Result<AstNode, ()> {
     let start_pos = lex
         .expect_auto_err(TokenKind::Keyword(Keyword::If).as_int())
         .span
         .from;
-    parse_if_expr(lex, start_pos)
+    parse_if_expr(lex, is_macro, start_pos)
 }
 
-fn parse_if_expr<'a>(lex: &'a mut LexVisiter, start_pos: Pos) -> Result<AstNode, ()> {
-    let conditional = Box::new(dbg!(parse_expression(lex)).unwrap());
-    dbg!(lex.tokens.peek());
+fn parse_if_expr(lex: &mut LexVisiter, is_macro: bool, start_pos: Pos) -> Result<AstNode, ()> {
+    let conditional = Box::new(parse_expression(lex).unwrap());
     let block = Box::new(parse_block(lex, true, VarType::Void).unwrap());
-    let else_if = match lex.tokens.peek().map(|x| &x.kind) {
+
+    let next_is_macro = matches!(lex.peek().map(|x| &x.kind), Some(TokenKind::Hash));
+    if next_is_macro {
+        lex.next();
+    }
+
+    let else_if = match lex.peek().map(|x| &x.kind) {
         Some(TokenKind::Keyword(Keyword::Else)) => {
-            lex.tokens.next();
-            if matches!(
-                lex.tokens.peek().unwrap().kind,
-                TokenKind::Keyword(Keyword::If)
-            ) {
-                ElseBlock::ElseIf(Box::new(parse_if_stmt(lex).unwrap()))
+            lex.next();
+            if matches!(lex.peek().unwrap().kind, TokenKind::Keyword(Keyword::If)) {
+                ElseBlock::ElseIf(Box::new(
+                    parse_if_stmt_with_is_macro(lex, next_is_macro).unwrap(),
+                ))
             } else {
                 ElseBlock::Else(Box::new(parse_block(lex, true, VarType::Void).unwrap()))
             }
@@ -1141,7 +1187,7 @@ fn parse_if_expr<'a>(lex: &'a mut LexVisiter, start_pos: Pos) -> Result<AstNode,
         _ => ElseBlock::Nothing,
     };
 
-    let end_pos = lex.tokens.peek().unwrap().span.to; // todo: fix this hack
+    let end_pos = lex.peek().unwrap().span.to; // todo: fix this hack
     let span = Span::new(start_pos, end_pos);
 
     Ok(AstNode::new(
@@ -1149,12 +1195,13 @@ fn parse_if_expr<'a>(lex: &'a mut LexVisiter, start_pos: Pos) -> Result<AstNode,
             conditional,
             block,
             else_if,
+            is_macro,
         }),
         span,
     ))
 }
 
-fn parse_return_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
+fn parse_return_stmt(lex: &mut LexVisiter) -> Result<AstNode, ()> {
     let start_pos = lex
         .expect(|x| matches!(x, TokenKind::Keyword(Keyword::Return)))
         .unwrap()
@@ -1169,9 +1216,9 @@ fn parse_return_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     Ok(AstNode::new(AstKind::Return(Box::new(value)), span))
 }
 
-fn parse_access<'a>(lex: &'a mut LexVisiter, lhs: AstNode) -> Result<AstNode, ()> {
+fn parse_access(lex: &mut LexVisiter, lhs: AstNode) -> Result<AstNode, ()> {
     let mut res = lhs;
-    while matches!(lex.tokens.peek().map(|x| &x.kind), Some(TokenKind::Dot)) {
+    while matches!(lex.peek().map(|x| &x.kind), Some(TokenKind::Dot)) {
         lex.expect_auto_err(TokenKind::Dot.as_int());
         let ident = lex.expect_auto_err(TokenKind::Ident(String::new()).as_int());
         let name = match &ident.kind {
@@ -1189,24 +1236,53 @@ fn parse_access<'a>(lex: &'a mut LexVisiter, lhs: AstNode) -> Result<AstNode, ()
     Ok(res)
 }
 
-fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
-    match &as_result(lex.tokens.peek()).unwrap().kind {
+fn parse_stmt(lex: &mut LexVisiter) -> Result<AstNode, ()> {
+    match &as_result(lex.peek()).unwrap().kind.clone() {
         t if t.is_type() => parse_var_decl(lex),
         TokenKind::Keyword(Keyword::Function) => parse_fn(lex),
         TokenKind::Keyword(Keyword::Return) => parse_return_stmt(lex),
         TokenKind::Keyword(Keyword::If) => parse_if_stmt(lex),
         TokenKind::Semi => {
-            lex.tokens.next();
+            lex.next();
             parse_stmt(lex)
         }
+        TokenKind::Hash => {
+            lex.next();
+            let lookahead = lex.peek().unwrap();
+            match &lookahead.kind {
+                TokenKind::Keyword(Keyword::If) => parse_if_stmt_with_is_macro(lex, true),
+                TokenKind::Ident(ident) => {
+                    let path = parse_access(
+                        lex,
+                        AstNode::new(
+                            AstKind::Ident(lex.find_id(&ident).unwrap_or_else(|| {
+                                lex.error(
+                                    format!("Use of undefined symbol '{ident}'"),
+                                    "".to_string(),
+                                    &lookahead.span,
+                                );
+                            })),
+                            lookahead.span,
+                        ),
+                    )
+                    .unwrap();
+                    parse_fn_call(lex, path, true)
+                }
+                t => lex.error(
+                    format!("Expected either a macro call or a compile time if but found {t:?}"),
+                    "".to_string(),
+                    &lookahead.span,
+                ),
+            }
+        }
         TokenKind::Ident(outer_ident) => {
-            let start_pos = lex.tokens.peek().unwrap().span.from;
+            let start_pos = lex.peek().unwrap().span.from;
             let path = parse_expression(lex).unwrap();
-            let next = as_result(lex.tokens.peek()).unwrap();
+            let next = lex.peek().unwrap().clone();
             let res;
             match &next.kind {
                 TokenKind::BinOpEq(op) => {
-                    lex.tokens.next();
+                    lex.next();
                     let expr = parse_expression(lex).unwrap();
                     let span = Span::new(start_pos, expr.span.to);
                     res = Ok(AstNode::new(
@@ -1215,7 +1291,7 @@ fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     ));
                 }
                 TokenKind::Assign => {
-                    lex.tokens.next();
+                    lex.next();
                     let expr = parse_expression(lex).unwrap();
                     let span = Span::new(start_pos, expr.span.to);
                     res = Ok(AstNode::new(
@@ -1223,7 +1299,7 @@ fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                         span,
                     ));
                 }
-                TokenKind::OpenDelim(Delimiter::Paren) => res = parse_fn_call(lex, path),
+                TokenKind::OpenDelim(Delimiter::Paren) => res = parse_fn_call(lex, path, false),
                 TokenKind::Ident(_) => {
                     let span = Span::new(start_pos, next.span.to);
                     let id = lex.find_id(&outer_ident);
@@ -1233,7 +1309,6 @@ fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                             "".to_string(),
                             &span,
                         );
-                        unreachable!()
                     }
                     let s = match &lex.get_id(&id.unwrap()).unwrap().kind {
                         VarType::Struct(s) => s.clone(),
@@ -1242,6 +1317,10 @@ fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     let kind = VarType::Struct(s);
                     return parse_var_decl_of_type(lex, kind, start_pos);
                 }
+                TokenKind::Semi => {
+                    lex.next();
+                    return Ok(path);
+                }
                 t => {
                     let span = next.span.clone();
                     lex.error(
@@ -1249,7 +1328,6 @@ fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                         "".to_string(),
                         &span,
                     );
-                    res = Err(())
                 }
             }
             lex.expect_auto_err(TokenKind::Semi.as_int());
@@ -1264,7 +1342,7 @@ fn parse_stmt<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     }
 }
 
-fn parse_struct<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
+fn parse_struct(lex: &mut LexVisiter) -> Result<AstNode, ()> {
     let from_pos = lex
         .expect_auto_err(TokenKind::Keyword(Keyword::Struct).as_int())
         .span
@@ -1282,13 +1360,13 @@ fn parse_struct<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     let scope_id = lex.push_scope();
     loop {
         if matches!(
-            lex.tokens.peek().map(|x| &x.kind),
+            lex.peek().map(|x| &x.kind),
             Some(TokenKind::CloseDelim(Delimiter::Brace))
         ) {
             break;
         }
 
-        let from_pos = lex.tokens.peek().unwrap().span.from;
+        let from_pos = lex.peek().unwrap().span.from;
         let kind = parse_type(lex).unwrap();
         let ident = lex.expect_auto_err(TokenKind::Ident(String::new()).as_int());
         let name = match &ident.kind {
@@ -1309,7 +1387,6 @@ fn parse_struct<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
                     "".to_string(),
                     &span,
                 );
-                unreachable!()
             });
         fields.push(AstNode::new(AstKind::Field(Field { kind, id, name }), span));
 
@@ -1340,15 +1417,65 @@ fn parse_struct<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
     Ok(AstNode::new(AstKind::StructDecl(id, struct_type), span))
 }
 
-pub fn parse_items<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
+pub fn parse_items(lex: &mut LexVisiter, mod_name: String) -> Result<AstNode, ()> {
+    let scope = lex.push_scope();
+    lex.modules.insert(mod_name, scope);
+
     let mut items = Vec::new();
-    while lex.tokens.peek().is_some() {
-        match &as_result(lex.tokens.peek()).unwrap().kind {
+    while lex.peek().is_some() {
+        match &as_result(lex.peek()).unwrap().kind {
+            TokenKind::Keyword(Keyword::Use) => {
+                let start_pos = lex.peek().unwrap().span.from;
+                let mut end_pos = start_pos.clone();
+                lex.next();
+                let mut path = Vec::new();
+                while !matches!(lex.peek().unwrap().kind, TokenKind::Semi) {
+                    let token = lex.expect_auto_err(TokenKind::Ident(String::new()).as_int());
+                    let segment = match token.kind {
+                        TokenKind::Ident(s) => s.clone(),
+                        _ => unreachable!(),
+                    };
+                    path.push(segment);
+
+                    let next = lex.next().unwrap();
+                    match next.kind {
+                        TokenKind::Dot => {}
+                        TokenKind::Semi => {
+                            end_pos = next.span.to;
+                            break;
+                        }
+                        k => lex.error(
+                            format!("Expected '.' or ';' but found {k:?}"),
+                            "".to_owned(),
+                            &next.span,
+                        ),
+                    }
+                }
+                let input_file = "./".to_string() + &path.join("/") + ".tau";
+
+                if !std::path::Path::new(&input_file).exists() {
+                    lex.error(
+                        format!("Could not find file '{input_file}'"),
+                        "".to_string(),
+                        &Span::new(start_pos, end_pos),
+                    );
+                }
+
+                let old = lex.current_lex;
+
+                lex.lexs.push(crate::lex::lex_file(input_file));
+                lex.current_lex = lex.lexs.len() - 1;
+
+                items.push(parse_items(lex, path.last().unwrap().clone()).unwrap());
+
+                lex.current_lex = old;
+            }
             TokenKind::Keyword(Keyword::Function) => items.push(parse_fn(lex).unwrap()),
             TokenKind::Keyword(Keyword::Struct) => items.push(parse_struct(lex).unwrap()),
+            TokenKind::Hash => items.push(parse_stmt(lex).unwrap()),
             t if t.is_type() => items.push(parse_var_decl(lex).unwrap()),
             t => {
-                let span = lex.tokens.peek().unwrap().span;
+                let span = lex.peek().unwrap().span;
                 lex.error(
                     format!("Expected item but found {t:?}"),
                     "".to_owned(),
@@ -1357,5 +1484,7 @@ pub fn parse_items<'a>(lex: &'a mut LexVisiter) -> Result<AstNode, ()> {
             }
         }
     }
+
+    lex.pop_scope();
     Ok(AstNode::new(AstKind::Items(items), Span::null()))
 }

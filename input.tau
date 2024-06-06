@@ -1,3 +1,5 @@
+use std;
+
 struct Point {
     float x;
     float y;
@@ -8,6 +10,13 @@ struct Rect {
     Point max;
 }
 
+fn say_hello() => println("Hello");
+
 fn main() int { 
     Rect t = Rect(min: Point(x: 1.0, y: 2.0), max: Point(x: 3.0, y: 4.0));
+
+    say_hello();
+
+    string msg = if true => "Yup"; else => "Nope";
+    if true => println(msg);
 }
