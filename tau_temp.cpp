@@ -55,5 +55,13 @@ println(msg);
 print("x: ");
 println(str(t.min.x));
 int xs [3] = {1,2,3,};
+{
+xs;
+}
+;
+for (int i = 1; i < 10; ++i){
+println(str(i));
+}
+;
 }
 

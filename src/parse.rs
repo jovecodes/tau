@@ -64,6 +64,7 @@ pub enum VarTypeKind {
     Ptr(Box<VarType>),
     Deref(Box<VarType>),
     Array(Array),
+    Range(Box<VarType>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -511,6 +512,15 @@ pub struct IfStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForStatement {
+    pub iterator: ID,
+    pub range: Box<AstNode>,
+    pub block: Box<AstNode>,
+    pub scope: ScopeID,
+    pub range_type: VarType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
     pub id: ID,
@@ -537,6 +547,12 @@ pub enum AssignVal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Range {
+    Single(Box<AstNode>),
+    To(Box<AstNode>, Box<AstNode>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AstKind {
     Ident(ID),
     BinOp(Box<AstNode>, BinOp, Box<AstNode>),
@@ -550,6 +566,7 @@ pub enum AstKind {
     Return(Box<AstNode>),
     ExprRet(Box<AstNode>),
     If(IfStatement),
+    For(ForStatement),
     Number(Number),
     String(String),
     Parameter(VarType, ID),
@@ -562,6 +579,7 @@ pub enum AstKind {
     BinOpEq(Box<AstNode>, BinOp, Box<AstNode>),
     Assign(Box<AstNode>, Box<AstNode>),
     Access(Box<AstNode>, String, bool),
+    Range(Range),
     Null,
     Bool(bool),
 }
@@ -1357,12 +1375,87 @@ fn parse_access(lex: &mut LexVisitor, lhs: AstNode) -> Result<AstNode, ()> {
     Ok(res)
 }
 
+fn parse_range(lex: &mut LexVisitor) -> Result<AstNode, ()> {
+    let single = parse_expression(lex).unwrap();
+    if matches!(
+        lex.peek().map(|x| &x.kind),
+        Some(TokenKind::Keyword(Keyword::To))
+    ) {
+        lex.next();
+        let to = parse_expression(lex).unwrap();
+        let span = Span::new(single.span.from, to.span.to);
+        Ok(AstNode::new(
+            AstKind::Range(Range::To(Box::new(single), Box::new(to))),
+            span,
+        ))
+    } else {
+        let span = single.span.clone();
+        Ok(AstNode::new(
+            AstKind::Range(Range::Single(Box::new(single))),
+            span,
+        ))
+    }
+}
+
+fn parse_for_loop(lex: &mut LexVisitor) -> Result<AstNode, ()> {
+    let from_pos = lex
+        .expect_auto_err(TokenKind::Keyword(Keyword::For).as_int())
+        .span
+        .from;
+    let scope = lex.push_scope();
+    let ident = lex.expect_auto_err(TokenKind::Ident(String::new()).as_int());
+    let name = match &ident.kind {
+        TokenKind::Ident(i) => i.clone(),
+        _ => unreachable!(),
+    };
+
+    lex.expect_auto_err(TokenKind::Keyword(Keyword::In).as_int());
+    let mut range = parse_range(lex).unwrap();
+    let range_type = var_type_of(&mut range, lex, VarType::new(VarTypeKind::Void, false));
+
+    let iterator;
+    if let VarTypeKind::Range(t) = range_type.kind.clone() {
+        iterator = lex
+            .push_id(SymbolInfo {
+                kind: *t.clone(),
+                name: name.clone(),
+                immutable: false,
+                constant_value: None,
+            })
+            .unwrap_or_else(|_| {
+                lex.error(
+                    format!("Redefining variable {name}"),
+                    format!("Change this variables name"),
+                    &ident.span,
+                )
+            });
+    } else {
+        unreachable!()
+    }
+
+    let block = parse_block(lex, false, VarType::new(VarTypeKind::Void, false)).unwrap();
+    lex.pop_scope();
+
+    let span = Span::new(from_pos, block.span.to);
+    Ok(AstNode::new(
+        AstKind::For(ForStatement {
+            iterator,
+            range: Box::new(range),
+            block: Box::new(block),
+            scope,
+            range_type,
+        }),
+        span,
+    ))
+}
+
 fn parse_stmt(lex: &mut LexVisitor) -> Result<AstNode, ()> {
     match &as_result(lex.peek()).unwrap().kind.clone() {
         t if t.is_type() => parse_var_decl(lex),
         TokenKind::Keyword(Keyword::Function) => parse_fn(lex),
         TokenKind::Keyword(Keyword::Return) => parse_return_stmt(lex),
         TokenKind::Keyword(Keyword::If) => parse_if_stmt(lex),
+        TokenKind::Keyword(Keyword::For) => parse_for_loop(lex),
         TokenKind::Semi => {
             lex.next();
             parse_stmt(lex)

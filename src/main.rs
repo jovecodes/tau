@@ -204,6 +204,8 @@ fn compile_time_interpret(ast: &mut AstNode, visitor: &mut LexVisitor) -> Value 
         AstKind::Access(_, _, _) => todo!(),
         AstKind::Null => todo!(),
         AstKind::Bool(b) => Value::Bool(*b),
+        AstKind::Range(_) => todo!(),
+        AstKind::For(_) => todo!(),
     }
 }
 

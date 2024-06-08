@@ -22,6 +22,9 @@ pub enum Keyword {
     False,
     Use,
     Const,
+    For,
+    In,
+    To,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -45,6 +48,9 @@ impl TryFrom<&str> for Keyword {
             "false" => Ok(Keyword::False),
             "use" => Ok(Keyword::Use),
             "const" => Ok(Keyword::Const),
+            "for" => Ok(Keyword::For),
+            "in" => Ok(Keyword::In),
+            "to" => Ok(Keyword::To),
             _ => Err(false),
         }
     }
@@ -181,6 +187,9 @@ impl TokenKind {
                     Keyword::False => 14,
                     Keyword::Use => 15,
                     Keyword::Const => 16,
+                    Keyword::For => 17,
+                    Keyword::In => 18,
+                    Keyword::To => 19,
                 },
             ),
             TokenKind::Semi => (9, 0),

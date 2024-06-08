@@ -235,6 +235,17 @@ pub fn var_type_of(ast: &mut AstNode, visitor: &LexVisitor, expected_type: VarTy
             let id = visitor.get_access_id(ast);
             visitor.get_id(&id).unwrap().kind.clone()
         }
+        AstKind::Range(r) => match r {
+            crate::parse::Range::Single(s) => VarType::new(
+                VarTypeKind::Range(Box::new(var_type_of(s, visitor, expected_type))),
+                false,
+            ),
+            crate::parse::Range::To(f, _) => VarType::new(
+                VarTypeKind::Range(Box::new(var_type_of(f, visitor, expected_type))),
+                false,
+            ),
+        },
+        AstKind::For(_) => todo!(),
     }
 }
 
@@ -507,6 +518,8 @@ fn type_check(ast: &mut AstNode, visitor: &LexVisitor, expected_type: VarType) {
         AstKind::Access(node, _, _) => type_check(node, visitor, expected_type),
         AstKind::Null => {}
         AstKind::Bool(_) => {}
+        AstKind::Range(_) => todo!(),
+        AstKind::For(_) => {}
     }
 }
 

@@ -2,8 +2,8 @@ use std::fmt::Write;
 
 use crate::{
     parse::{
-        Array, ArraySize, AssignVal, AstKind, AstNode, ElseBlock, LexVisitor, Number, VarType,
-        VarTypeKind,
+        Array, ArraySize, AssignVal, AstKind, AstNode, ElseBlock, LexVisitor, Number, Range,
+        VarType, VarTypeKind,
     },
     Value,
 };
@@ -36,6 +36,7 @@ pub fn var_type_to_c(var_type: &VarType, visitor: &LexVisitor) -> String {
             }
             output
         }
+        VarTypeKind::Range(inner) => var_type_to_c(inner, visitor),
     }
 }
 
@@ -369,6 +370,39 @@ pub fn to_c(node: &AstNode, visitor: &LexVisitor, exp_ret: Option<&String>) -> S
             } else {
                 to_c(lhs, visitor, None) + "." + &ident
             }
+        }
+        AstKind::Range(_) => todo!(),
+        AstKind::For(for_stmt) => {
+            let mut output = String::new();
+            output += "for (";
+            let iter_name = &visitor.get_id(&for_stmt.iterator).unwrap().name;
+
+            if let AstKind::Range(range) = &for_stmt.range.kind {
+                match range {
+                    Range::Single(s) => {
+                        output += &var_type_to_c(&for_stmt.range_type, visitor);
+                        output += " ";
+                        output += iter_name;
+                        output += " : ";
+                        output += &to_c(s, visitor, None);
+                    }
+                    Range::To(from, to) => {
+                        output += &var_type_to_c(&for_stmt.range_type, visitor);
+                        output += " ";
+                        output += iter_name;
+                        output += " = ";
+                        output += &to_c(from, visitor, None);
+                        output += "; i < ";
+                        output += &to_c(to, visitor, None);
+                        output += "; ++i";
+                    }
+                }
+            } else {
+                unreachable!()
+            }
+            output += ")";
+            output += &to_c(&for_stmt.block, visitor, None);
+            output
         }
     }
 }
