@@ -335,7 +335,6 @@ pub fn to_c(node: &AstNode, visitor: &LexVisitor, exp_ret: Option<&String>) -> S
             let mut output = String::new();
             if field.kind.constant {
                 output += "const ";
-                println!("constant param");
             }
             output += &var_type_to_c(&field.kind, visitor);
             output += " ";

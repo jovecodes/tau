@@ -30,13 +30,13 @@ float sqrt(float x) {
 ;
 
 typedef struct Point {
-const float x;
-const float y;
+float x;
+float y;
 } Point;
 
 typedef struct Rect {
-const Point min;
-const Point max;
+Point min;
+Point max;
 } Rect;
 
 void say_hello() {
@@ -44,7 +44,7 @@ println("Hello");
 }
 
 int main() {
-const Rect t = {.min = {.x = 1, .y = 2, }, .max = {.x = 3, .y = 4, }, };
+Rect t = (Rect) {.min = (Point) {.x = 1, .y = 2, }, .max = (Point) {.x = 3, .y = 4, }, };
 say_hello();
 const bool maybe = false;
 const String msg = "Nope";
@@ -54,6 +54,6 @@ println(msg);
 ;
 print("x: ");
 println(str(t.min.x));
-Vec<int> xs = {1,2,3,4,};
+int xs [3] = {1,2,3,};
 }
 

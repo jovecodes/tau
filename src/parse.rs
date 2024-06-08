@@ -995,13 +995,13 @@ fn parse_type_inner(lex: &mut LexVisitor) -> Result<VarType, ()> {
                         _ => todo!(),
                     },
                 ),
-                true,
+                false,
             )),
-            TokenKind::Keyword(Keyword::Var) => Ok(VarType::new(VarTypeKind::Unknown, true)),
-            TokenKind::Keyword(Keyword::Int) => Ok(VarType::new(VarTypeKind::Int, true)),
-            TokenKind::Keyword(Keyword::Float) => Ok(VarType::new(VarTypeKind::Float, true)),
-            TokenKind::Keyword(Keyword::String) => Ok(VarType::new(VarTypeKind::String, true)),
-            TokenKind::Keyword(Keyword::Bool) => Ok(VarType::new(VarTypeKind::Bool, true)),
+            TokenKind::Keyword(Keyword::Var) => Ok(VarType::new(VarTypeKind::Unknown, false)),
+            TokenKind::Keyword(Keyword::Int) => Ok(VarType::new(VarTypeKind::Int, false)),
+            TokenKind::Keyword(Keyword::Float) => Ok(VarType::new(VarTypeKind::Float, false)),
+            TokenKind::Keyword(Keyword::String) => Ok(VarType::new(VarTypeKind::String, false)),
+            TokenKind::Keyword(Keyword::Bool) => Ok(VarType::new(VarTypeKind::Bool, false)),
             _ => Err(()),
         },
         None => lex.error(
@@ -1023,6 +1023,7 @@ fn parse_type(lex: &mut LexVisitor) -> Result<VarType, ()> {
     };
     let mut var_type = parse_type_inner(lex)
         .unwrap_or_else(|_| lex.error("Could not parse type".to_string(), "".to_string(), &span));
+    var_type.constant = constant;
     lex.next();
     loop {
         match lex.peek().map(|x| &x.kind) {
@@ -1442,7 +1443,7 @@ fn parse_stmt(lex: &mut LexVisitor) -> Result<AstNode, ()> {
                         VarTypeKind::Struct(s) => s.clone(),
                         _ => todo!(),
                     };
-                    let kind = VarType::new(VarTypeKind::Struct(s), true);
+                    let kind = VarType::new(VarTypeKind::Struct(s), false);
                     return parse_var_decl_of_type(lex, kind, start_pos);
                 }
                 TokenKind::Semi => {

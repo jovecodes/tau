@@ -260,7 +260,10 @@ fn type_check(ast: &mut AstNode, visitor: &LexVisitor, expected_type: VarType) {
         AstKind::If(if_stmt) => {
             let conditional_type =
                 var_type_of(&mut if_stmt.conditional, visitor, expected_type.clone());
-            if conditional_type != VarType::new(VarTypeKind::Bool, true) {
+            if !conditional_type
+                .clone()
+                .loosy_eq(VarType::new(VarTypeKind::Bool, true))
+            {
                 visitor.error(
                 format!("Expected expression of type bool in if statement but found one of type {conditional_type}"),
                 "".to_string(),
@@ -345,7 +348,7 @@ fn type_check(ast: &mut AstNode, visitor: &LexVisitor, expected_type: VarType) {
                                 visitor,
                                 expected_type.clone(),
                             );
-                            if found != expected {
+                            if !found.clone().loosy_eq(expected.clone()) {
                                 visitor.error(
                                 format!("Parameter {i} has expected type of {expected} but found {found}"),
                                 "".to_string(),
