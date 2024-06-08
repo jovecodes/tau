@@ -1,8 +1,21 @@
-fn test() {
-    #if "cpp" == "cpp" {
+fn print(string s) {
+    #if __TARGET_LANGUAGE__ == "cpp" {
+        #asm("printf(\"%s\", s.utf8().get_data());");
+    }
+} 
+
+fn println(const string s) {
+    #if __TARGET_LANGUAGE__ == "cpp" {
+        #asm("printf(\"%s\\n\", s.utf8().get_data());");
+    }
+}
+
+fn str(int self) string {
+    #if __TARGET_LANGUAGE__ == "cpp" {
+        #asm("return to_string(self);");
     }
 }
 
 fn sqrt(float x) float {
-    return x;
+    
 }

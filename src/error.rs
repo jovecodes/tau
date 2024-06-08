@@ -1,4 +1,4 @@
-use crate::{lex::Lex, parse::LexVisiter, pos::Span};
+use crate::{lex::Lex, parse::LexVisitor, pos::Span};
 use core::fmt;
 use std::{process::exit, usize};
 
@@ -144,7 +144,7 @@ impl Log for Lex {
     }
 }
 
-impl Log for LexVisiter {
+impl Log for LexVisitor {
     fn error(&self, msg: String, help: String, span: &Span) -> ! {
         Logger {
             path: &self.lexs[self.current_lex].path,

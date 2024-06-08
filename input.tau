@@ -17,6 +17,19 @@ fn main() int {
 
     say_hello();
 
-    string msg = if true => "Yup"; else => "Nope";
+    const bool maybe = false;
+    const string msg = if maybe => "Yup"; else => "Nope";
     if true => println(msg);
+    print("x: ");
+    println(str(t.min.x));
+
+    int[3] xs = [
+        1,
+        2,
+        3,
+    ];
+
+    // for i in xs {
+    //     println(str(i));
+    // }
 }

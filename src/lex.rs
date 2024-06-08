@@ -21,6 +21,7 @@ pub enum Keyword {
     True,
     False,
     Use,
+    Const,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -43,6 +44,7 @@ impl TryFrom<&str> for Keyword {
             "true" => Ok(Keyword::True),
             "false" => Ok(Keyword::False),
             "use" => Ok(Keyword::Use),
+            "const" => Ok(Keyword::Const),
             _ => Err(false),
         }
     }
@@ -178,6 +180,7 @@ impl TokenKind {
                     Keyword::True => 13,
                     Keyword::False => 14,
                     Keyword::Use => 15,
+                    Keyword::Const => 16,
                 },
             ),
             TokenKind::Semi => (9, 0),
@@ -574,6 +577,8 @@ fn next_token(lex: &Lex, pos: &mut Pos) -> Option<Token> {
                                 Some('t') => s.push('\t'),
                                 Some('r') => s.push('\r'),
                                 Some('0') => s.push('\0'),
+                                Some('"') => s.push('"'),
+                                Some('\\') => s.push('\\'),
                                 c => lex.error(
                                     format!("Unexpected escape character but found found {:?} when lexing", c),
                                     format!("fix this, dingus"),
